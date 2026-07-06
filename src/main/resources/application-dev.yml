@@ -1,0 +1,112 @@
+server:
+  port: 8087
+
+spring:
+  datasource:
+    type: com.alibaba.druid.pool.DruidDataSource
+    druid:
+      driver-class-name: com.mysql.cj.jdbc.Driver
+      url: jdbc:mysql://113.46.179.60:3308/hero_middleware?useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&useSSL=false&serverTimezone=GMT%2B8
+      username: root
+      password: Jiemian*123
+      initial-size: 5
+      min-idle: 5
+      max-active: 20
+      max-wait: 60000
+      time-between-eviction-runs-millis: 60000
+      min-evictable-idle-time-millis: 300000
+      validation-query: SELECT 1
+      test-while-idle: true
+      test-on-borrow: false
+      test-on-return: false
+      pool-prepared-statements: true
+      max-pool-prepared-statement-per-connection-size: 20
+      filters: stat,wall
+      web-stat-filter:
+        enabled: true
+      stat-view-servlet:
+        enabled: true
+        url-pattern: /druid/*
+        reset-enable: false
+        login-username: admin
+        login-password: admin
+
+zhishu:
+  api:
+    #测试环境
+#    base-url: https://open.qfei.cn
+#    app-id: cli_zPNO5dpWep0SUsH5
+#    app-secret: 3gs2UpXfh1pcwMgvw0hP1yiZXeBGFtF6
+#    timeout: 30000
+#    draft-page-url: https://dev.zhishu.com/contract/draft?id={contractId}
+
+    #正式环境
+    base-url: https://open.qfei.cn
+    app-id: cli_zbN4K2ESwbeR6vk1
+    app-secret: OHjFWcCdyQp9OxM4tnTlzRNKUaSu9z4x
+    timeout: 30000
+    draft-page-url: https://contract.qfei.cn/apply/template?id={contractId}
+    detail-page-url: https://contract.qfei.cn/management/mine/detail/{contractId}
+  base:
+    sourceSystem: Zhishu
+    callback-url: http://113.46.179.60:8087
+
+yuecai:
+  api:
+    #测试环境
+#    base-url: http://101.43.90.179:1051/gtw
+    #UAT环境
+    base-url: http://129.211.211.87:1051/gtw
+    grant-type: client_credentials
+#    client-id: interface
+#    client-secret: interface20260107
+    client-id: contract
+    client-secret: b-bR-b:GcRR9nhc
+    timeout: 30000
+  data:
+    startTime: 2024-01-01 00:00:00
+    template-procurement: 202604210001
+    template-order: 202605130009
+    template-anchor: 202604220006
+    template-fhlxy: 202604280014
+#    user-id: e8d58ag6 #黄劭文
+    user-id: 654bce86 #程林枫
+    document-user-id: e8d58ag6 #黄劭文
+    page-size: 500
+    vendor-sync-multi-thread: false
+
+feishu:
+  api:
+    base-url: https://open.feishu.cn
+    app-id: cli_a95dd5557a625cdb
+    app-secret: lBAWoDbcifOBYm7JCsDsUgipGv0O0DXz
+#    app-id: cli_a8e50e3ef166100c
+#    app-secret: zFTSHnTgwLyi0ZVEVF5ytBU0uNNNQjPq
+    timeout: 30000
+  bitable:
+    app-token: FRXdbRAWeaWNs7sS7UHcrr1cnre
+    payment-table-id: tblc7TEVu9ejF8GN
+    receipt-table-id: tblJ6GfSopZjb2LO
+    archive-table-id: tblGPA2aAwzOkZZk
+    tax-table-id: tblPXVzrWRU0hMoe
+
+api-log:
+  enabled: true
+  api-app-token: FKzCbAKAqaMeztsUaVkcc0jfnJb
+  api-table-id: tblS7OKeTYfLgchB
+  max-content-length: 20000
+  alert:
+    enabled: true
+    receive-chat-ids: []
+    receive-user-ids: []
+    dedup-window-seconds: 300
+    max-error-summary-length: 500
+
+zhishu-event-log:
+  enabled: true
+  table-id: tbl1Kxiz9b7D6cez
+  max-content-length: 20000
+
+logging:
+  level:
+    com.hero.middleware: debug

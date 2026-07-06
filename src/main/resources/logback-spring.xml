@@ -1,0 +1,33 @@
+<configuration>
+
+    <springProperty scope="context" name="FILE_PATH" source="logging.file.name"/>
+    <property name="FILE_NAME" value="hero-middleware"/>
+    <property name="FILE_PATTERN" value="%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %highlight(%-5level) [%logger{50}] >>> %m%n"/>
+    <logger name="java.net.CookieManager" level="OFF"/>
+
+    <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>${FILE_PATTERN}</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+    </appender>
+
+    <appender name="syslog" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <File>${FILE_PATH}/${FILE_NAME}.log</File>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>${FILE_PATH}/${FILE_NAME}.log.%d.%i.log</fileNamePattern>
+            <maxHistory>30</maxHistory>
+            <maxFileSize>500MB</maxFileSize>
+        </rollingPolicy>
+        <encoder>
+            <pattern>${FILE_PATTERN}</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+    </appender>
+
+    <root name="com.hero.middleware" level="info" additivity = "false">
+        <appender-ref ref="STDOUT" />
+        <appender-ref ref="syslog" />
+    </root>
+
+</configuration>

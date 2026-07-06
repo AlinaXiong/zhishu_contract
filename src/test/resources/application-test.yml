@@ -1,0 +1,87 @@
+server:
+  port: 8080
+
+spring:
+  profiles:
+    active: test
+  application:
+    name: hero-middleware-test
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://localhost:3306/hero_middleware_test?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai
+    username: root
+    password: root
+    type: com.alibaba.druid.pool.DruidDataSource
+    druid:
+      initial-size: 5
+      min-idle: 5
+      max-active: 20
+      max-wait: 60000
+  jackson:
+    date-format: yyyy-MM-dd HH:mm:ss
+    time-zone: GMT+8
+    serialization:
+      write-dates-as-timestamps: false
+
+mybatis-plus:
+  mapper-locations: classpath*:/mapper/**/*.xml
+  type-aliases-package: com.hero.middleware.entity
+  global-config:
+    db-config:
+      id-type: auto
+      logic-delete-field: deleted
+      logic-delete-value: 1
+      logic-not-delete-value: 0
+  configuration:
+    map-underscore-to-camel-case: true
+    cache-enabled: false
+    call-setters-on-nulls: true
+    jdbc-type-for-null: 'null'
+
+zhishu:
+  api:
+    base-url: https://open.qfei.cn
+    app-id: test-app-id
+    app-secret: test-app-secret
+    timeout: 30000
+    draft-page-url: https://zhishu.com/contract/draft?id={contractId}
+
+yuecai:
+  api:
+    base-url: https://yuecai.test.com
+    timeout: 30000
+
+feishu:
+  api:
+    base-url: https://open.feishu.cn
+    app-id: test-feishu-app-id
+    app-secret: test-feishu-app-secret
+    timeout: 30000
+  bitable:
+    app-token: FRXdbRAWeaWNs7sS7UHcrr1cnre
+    payment-table-id: tblc7TEVu9ejF8GN
+    receipt-table-id: tblJ6GfSopZjb2LO
+    archive-table-id: tblGPA2aAwzOkZZk
+    tax-table-id: tblPXVzrWRU0hMoe
+
+api-log:
+  enabled: false
+  api-app-token: ""
+  api-table-id: ""
+  max-content-length: 20000
+  alert:
+    enabled: false
+    receive-chat-ids: []
+    receive-user-ids: []
+    dedup-window-seconds: 300
+    max-error-summary-length: 500
+
+zhishu-event-log:
+  enabled: false
+  table-id: ""
+  max-content-length: 20000
+
+logging:
+  level:
+    com.hero.middleware: debug
+    com.hero.middleware.mapper: debug
