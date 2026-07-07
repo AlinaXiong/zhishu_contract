@@ -1,5 +1,6 @@
 package com.hero.middleware.controller;
 
+import com.hero.middleware.annotation.SkipApiLogTable;
 import com.hero.middleware.common.Result;
 import com.hero.middleware.dto.ApproveContractToNodeDTO;
 import com.hero.middleware.dto.ApproveContractToNodeResultDTO;
@@ -25,6 +26,7 @@ import java.util.Map;
 @Slf4j
 @RestController
 @RequestMapping("/api/contract/syn")
+@SkipApiLogTable
 public class ContractSynController {
 
     @Autowired

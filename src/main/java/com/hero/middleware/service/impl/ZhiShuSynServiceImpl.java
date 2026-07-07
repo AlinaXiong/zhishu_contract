@@ -33,6 +33,7 @@ import com.hero.middleware.client.zhishu.response.UploadContractFileResponse;
 import com.hero.middleware.client.zhishu.response.ZhishuCreateContractResponse;
 import com.hero.middleware.config.YeCaiDataConfig;
 import com.hero.middleware.config.YuecaiApiConfig;
+import com.hero.middleware.context.ApiLogTableContext;
 import com.hero.middleware.dto.ApproveContractToNodeDTO;
 import com.hero.middleware.dto.ApproveContractToNodeResultDTO;
 import com.hero.middleware.dto.DeleteDraftContractsResultDTO;
@@ -292,14 +293,14 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
             for (int index = 0; index < batches.size(); index++) {
                 final int batchNo = index + 1;
                 final List<String> batchContractNumbers = batches.get(index);
-                futures.add(executorService.submit(() -> {
+                futures.add(executorService.submit(ApiLogTableContext.wrap(() -> {
                     log.info("智书13Sheet历史合同多线程同步第{}批开始，合同数={}，合同编码={}",
                             batchNo, batchContractNumbers.size(), JSON.toJSONString(batchContractNumbers));
                     HistoryContractSyncDTO batchRequest = copyHistorySyncRequestForBatch(actualRequest, batchContractNumbers);
                     HistoryContractSyncResultDTO batchResult = syncHistoryContracts(batchRequest);
                     log.info("智书13Sheet历史合同多线程同步第{}批完成，结果={}", batchNo, JSON.toJSONString(batchResult));
                     return batchResult;
-                }));
+                })));
             }
 
             for (int index = 0; index < futures.size(); index++) {
@@ -367,7 +368,8 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
             for (int index = 0; index < contractNumbers.size(); index++) {
                 final int itemIndex = index + 1;
                 final String contractNumber = contractNumbers.get(index);
-                futures.add(executorService.submit(() -> syncOneYeCaiContract(itemIndex, contractNumber)));
+                futures.add(executorService.submit(
+                        ApiLogTableContext.wrap(() -> syncOneYeCaiContract(itemIndex, contractNumber))));
             }
             for (int index = 0; index < futures.size(); index++) {
                 String contractNumber = contractNumbers.get(index);
