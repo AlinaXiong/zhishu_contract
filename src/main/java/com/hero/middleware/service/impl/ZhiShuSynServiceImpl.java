@@ -2626,13 +2626,13 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
         if ("10".equals(roleCode)) {
             return ZhishuAndYecaiFiledEnum.PROJECT_MANAGER;
         }
-        if ("40".equals(roleCode)) {
+        if ("60".equals(roleCode)) {
             return ZhishuAndYecaiFiledEnum.ORDERHT_EXPENSE_GROUP;
         }
         if ("50".equals(roleCode)) {
             return ZhishuAndYecaiFiledEnum.ORDERHT_PROJECT_ACCEPTANCE;
         }
-        if ("60".equals(roleCode)) {
+        if ("40".equals(roleCode)) {
             return ZhishuAndYecaiFiledEnum.ORDERHT_PROJECT_BUDGET;
         }
         if ("30".equals(roleCode)) {
