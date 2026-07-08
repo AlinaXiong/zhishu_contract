@@ -40,6 +40,7 @@ import com.hero.middleware.dto.DeleteDraftContractsResultDTO;
 import com.hero.middleware.dto.HistoryContractSyncDTO;
 import com.hero.middleware.dto.HistoryContractSyncResultDTO;
 import com.hero.middleware.dto.ContractSyncDTO;
+import com.hero.middleware.dto.HistoryContractValidateResultDTO;
 import com.hero.middleware.dto.YeCaiContractSyncDTO;
 import com.hero.middleware.dto.YeCaiContractSyncResultDTO;
 import com.hero.middleware.enums.BankChargePayerEnum;
@@ -330,6 +331,94 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
 
         finishHistoryMultiThreadResult(mergedResult, startTime);
         log.info("智书13Sheet历史合同多线程同步结束，总数={}，成功数={}，失败数={}，成功合同编码={}，失败明细={}，耗时={}ms",
+                mergedResult.getTotalCount(), mergedResult.getSuccessCount(), mergedResult.getFailCount(),
+                mergedResult.getSuccessContractNumbers(), JSON.toJSONString(mergedResult.getFailures()),
+                mergedResult.getElapsedMillis());
+        return mergedResult;
+    }
+
+    @Override
+    public HistoryContractValidateResultDTO validateHistoryContractsMultiThread(HistoryContractSyncDTO request) {
+        long startTime = System.currentTimeMillis();
+        HistoryContractValidateResultDTO mergedResult = new HistoryContractValidateResultDTO();
+        HistoryContractSyncDTO actualRequest = request == null ? new HistoryContractSyncDTO() : request;
+        Set<String> contractNumberSet;
+        try {
+            contractNumberSet = resolveContractNumberFilter(actualRequest);
+        } catch (Exception e) {
+            mergedResult.addFailure("ALL", null, e.getMessage());
+            finishHistoryValidateResult(mergedResult, startTime);
+            return mergedResult;
+        }
+        String excelPath = trimToNull(actualRequest.getResolvedFilePath());
+        String fallbackRoot = trimToNull(actualRequest.getContractFileFallbackRoot());
+        if (contractNumberSet.isEmpty()) {
+            mergedResult.addFailure("ALL", null, "合同编码集合和txt文件地址不能同时为空");
+            finishHistoryValidateResult(mergedResult, startTime);
+            return mergedResult;
+        }
+        if (excelPath == null) {
+            mergedResult.addFailure("ALL", null, "导入模板地址不能为空");
+            finishHistoryValidateResult(mergedResult, startTime);
+            return mergedResult;
+        }
+        if (fallbackRoot == null) {
+            mergedResult.addFailure("ALL", null, "合同附件查询根路径不能为空");
+            finishHistoryValidateResult(mergedResult, startTime);
+            return mergedResult;
+        }
+
+        int threadCount = resolvePositiveInteger(actualRequest.getThreadCount(), DEFAULT_MULTI_THREAD_COUNT);
+        int batchSize = resolvePositiveInteger(actualRequest.getBatchSize(), DEFAULT_MULTI_THREAD_BATCH_SIZE);
+        List<String> contractNumbers = new ArrayList<>(contractNumberSet);
+        List<List<String>> batches = splitContractNumberBatches(contractNumbers, batchSize);
+        log.info("智书13Sheet历史合同多线程校验开始，合同数={}，批次数={}，线程数={}，批大小={}，excelPath={}，fallbackRoot={}，contractStatusCode={}",
+                contractNumbers.size(), batches.size(), threadCount, batchSize, excelPath, fallbackRoot,
+                resolveContractStatusCode(actualRequest));
+
+        ExecutorService executorService = Executors.newFixedThreadPool(threadCount);
+        List<Future<HistoryContractValidateResultDTO>> futures = new ArrayList<>();
+        try {
+            for (int index = 0; index < batches.size(); index++) {
+                final int batchNo = index + 1;
+                final List<String> batchContractNumbers = batches.get(index);
+                futures.add(executorService.submit(ApiLogTableContext.wrap(() -> {
+                    log.info("智书13Sheet历史合同多线程校验第{}批开始，合同数={}，合同编码={}",
+                            batchNo, batchContractNumbers.size(), JSON.toJSONString(batchContractNumbers));
+                    HistoryContractSyncDTO batchRequest = copyHistorySyncRequestForBatch(actualRequest, batchContractNumbers);
+                    HistoryContractValidateResultDTO batchResult = validateHistoryContracts(batchRequest);
+                    log.info("智书13Sheet历史合同多线程校验第{}批完成，结果={}", batchNo, JSON.toJSONString(batchResult));
+                    return batchResult;
+                })));
+            }
+
+            for (int index = 0; index < futures.size(); index++) {
+                List<String> batchContractNumbers = batches.get(index);
+                try {
+                    mergeHistoryValidateResult(mergedResult, futures.get(index).get());
+                } catch (Exception e) {
+                    log.error("智书13Sheet历史合同多线程校验第{}批异常，合同编码={}，错误={}",
+                            index + 1, JSON.toJSONString(batchContractNumbers), e.getMessage(), e);
+                    for (String contractNumber : batchContractNumbers) {
+                        mergedResult.addFailure(contractNumber, null, "批次校验异常：" + e.getMessage());
+                    }
+                }
+            }
+        } finally {
+            executorService.shutdown();
+            try {
+                if (!executorService.awaitTermination(10, TimeUnit.MINUTES)) {
+                    executorService.shutdownNow();
+                }
+            } catch (InterruptedException e) {
+                executorService.shutdownNow();
+                Thread.currentThread().interrupt();
+                log.warn("智书13Sheet历史合同多线程校验等待线程池结束被中断，错误={}", e.getMessage(), e);
+            }
+        }
+
+        finishHistoryValidateResult(mergedResult, startTime);
+        log.info("智书13Sheet历史合同多线程校验结束，总数={}，成功数={}，失败数={}，成功合同编码={}，失败明细={}，耗时={}ms",
                 mergedResult.getTotalCount(), mergedResult.getSuccessCount(), mergedResult.getFailCount(),
                 mergedResult.getSuccessContractNumbers(), JSON.toJSONString(mergedResult.getFailures()),
                 mergedResult.getElapsedMillis());
@@ -1458,6 +1547,108 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
         }
     }
 
+    private HistoryContractValidateResultDTO validateHistoryContracts(HistoryContractSyncDTO request) {
+        long startTime = System.currentTimeMillis();
+        HistoryContractValidateResultDTO result = new HistoryContractValidateResultDTO();
+        HistoryContractSyncDTO actualRequest = request == null ? new HistoryContractSyncDTO() : request;
+        try {
+            Set<String> contractNumberFilter = resolveContractNumberFilter(actualRequest);
+            String excelPath = resolveExcelPath(actualRequest.getResolvedFilePath());
+            SyncContext context = buildSyncContext(actualRequest);
+            context.setCounterPartyCodeLookup(loadCounterPartyCodeLookup());
+            ContractIndex contractIndex = scanContractIndex(excelPath);
+            Set<String> initialTargetKeys = resolveTargetGroupKeys(contractNumberFilter, contractIndex, context);
+            copyHistorySyncFailures(result, context.getResult());
+            Set<String> expandedTargetKeys = expandRelationDependencies(initialTargetKeys, contractIndex);
+            ContractSyncOrder syncOrder = sortByDependencies(expandedTargetKeys, contractIndex);
+            Set<String> failedGroupKeys = recordValidationSortFailures(syncOrder, contractIndex, result);
+            log.info("智书13Sheet历史合同校验待处理合同数={}，依赖展开后合同数={}，可校验合同数={}",
+                    initialTargetKeys.size(), expandedTargetKeys.size(), syncOrder.getOrderedGroupKeys().size());
+            validateInBatches(excelPath, syncOrder.getOrderedGroupKeys(), contractIndex, context, result, failedGroupKeys);
+        } catch (Exception e) {
+            log.error("智书13Sheet历史合同校验整体异常，错误={}", e.getMessage(), e);
+            result.addFailure("ALL", null, "校验整体异常：" + e.getMessage());
+        }
+        finishHistoryValidateResult(result, startTime);
+        return result;
+    }
+
+    private void validateInBatches(String excelPath,
+                                   List<String> orderedGroupKeys,
+                                   ContractIndex contractIndex,
+                                   SyncContext context,
+                                   HistoryContractValidateResultDTO result,
+                                   Set<String> failedGroupKeys) {
+        int total = orderedGroupKeys.size();
+        Path excelDirectory = resolveExcelDirectory(excelPath);
+        for (int startIndex = 0; startIndex < total; startIndex += batchSize) {
+            int endIndex = Math.min(startIndex + batchSize, total);
+            List<String> batchGroupKeys = orderedGroupKeys.subList(startIndex, endIndex);
+            Set<String> batchGroupKeySet = new LinkedHashSet<>(batchGroupKeys);
+            long startTime = System.currentTimeMillis();
+            Map<String, ContractGroup> contractGroupMap = loadContractGroups(excelPath, batchGroupKeySet, contractIndex);
+            log.info("智书13Sheet历史合同校验批次数据加载完成，batch={}/{}，batchSize={}，loaded={}，耗时={}ms",
+                    startIndex / batchSize + 1, (total + batchSize - 1) / batchSize, batchGroupKeys.size(),
+                    contractGroupMap.size(), System.currentTimeMillis() - startTime);
+            for (String groupKey : batchGroupKeys) {
+                ContractIndexEntry entry = contractIndex.getEntry(groupKey);
+                ContractGroup contractGroup = contractGroupMap.get(groupKey);
+                if (entry == null) {
+                    continue;
+                }
+                if (contractGroup == null) {
+                    result.addFailure(entry.getContractNumber(), entry.getFlowType().getDesc(), "批次读取未找到合同数据");
+                    failedGroupKeys.add(entry.getGroupKey());
+                    continue;
+                }
+                List<String> errors = new ArrayList<>();
+                errors.addAll(findFailedDependencyReasons(entry, contractIndex, failedGroupKeys));
+                OneContractValidationResult validationResult = validateOneContract(contractGroup, context, excelDirectory);
+                errors.addAll(validationResult.getErrors());
+                if (errors.isEmpty()) {
+                    result.addSuccess(contractGroup.getContractNumber());
+                } else {
+                    result.addFailure(contractGroup.getContractNumber(), contractGroup.getFlowType().getDesc(), errors);
+                    failedGroupKeys.add(entry.getGroupKey());
+                }
+            }
+            contractGroupMap.clear();
+        }
+    }
+
+    private Set<String> recordValidationSortFailures(ContractSyncOrder syncOrder,
+                                                     ContractIndex contractIndex,
+                                                     HistoryContractValidateResultDTO result) {
+        Set<String> failedGroupKeys = new LinkedHashSet<>();
+        for (Map.Entry<String, String> failure : syncOrder.getFailureReasonsByGroupKey().entrySet()) {
+            ContractIndexEntry entry = contractIndex.getEntry(failure.getKey());
+            if (entry == null) {
+                continue;
+            }
+            result.addFailure(entry.getContractNumber(), entry.getFlowType().getDesc(),
+                    toValidationFailureReason(failure.getValue()));
+            failedGroupKeys.add(entry.getGroupKey());
+        }
+        return failedGroupKeys;
+    }
+
+    private List<String> findFailedDependencyReasons(ContractIndexEntry entry,
+                                                     ContractIndex contractIndex,
+                                                     Set<String> failedGroupKeys) {
+        List<String> reasons = new ArrayList<>();
+        for (String relationContractNumber : entry.getRelationContractNumbers()) {
+            ContractIndexEntry dependency = resolveDependencyEntry(entry, relationContractNumber, contractIndex);
+            if (dependency != null && failedGroupKeys.contains(dependency.getGroupKey())) {
+                reasons.add("关联合同校验失败：" + relationContractNumber);
+            }
+        }
+        return reasons;
+    }
+
+    private String toValidationFailureReason(String reason) {
+        return reason == null ? null : reason.replace("关联合同同步失败", "关联合同校验失败");
+    }
+
     private Map<String, ContractGroup> loadContractGroups(String excelPath,
                                                           Set<String> groupKeys,
                                                           ContractIndex contractIndex) {
@@ -1559,6 +1750,240 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
             log.error("智书13Sheet历史合同创建异常，contract_number={}，flowType={}，错误={}",
                     contractNumber, contractGroup.getFlowType().getDesc(), e.getMessage(), e);
             return OneContractSyncResult.fail("创建异常：" + e.getMessage());
+        }
+    }
+
+    private OneContractValidationResult validateOneContract(ContractGroup contractGroup,
+                                                            SyncContext context,
+                                                            Path excelDirectory) {
+        List<String> errors = new ArrayList<>();
+        String contractNumber = contractGroup.getContractNumber();
+        List<CustomFieldValue> customFieldValues = Collections.emptyList();
+        try {
+            customFieldValues = buildCustomFieldValues(contractGroup);
+        } catch (Exception e) {
+            log.error("智书13Sheet历史合同自定义字段校验异常，contract_number={}，flowType={}，错误={}",
+                    contractNumber, contractGroup.getFlowType().getDesc(), e.getMessage(), e);
+            errors.add("自定义字段构建异常：" + buildExceptionMessage(e));
+        }
+
+        String contractCategory = trimToNull(toStringValue(getFirstNonBlankValue(contractGroup, CONTRACT_CATEGORY)));
+        String contractCategoryAbbreviation = null;
+        if (contractCategory == null) {
+            errors.add("contractCategory为空");
+        } else {
+            contractCategory = ContractCategoryMappingEnum.getCodeByName(contractCategory);
+            try {
+                contractCategoryAbbreviation =
+                        resolveContractCategoryAbbreviation(contractGroup, contractCategory, context);
+                if (contractCategoryAbbreviation == null) {
+                    errors.add("contractCategory未匹配到合同类型，contractCategory=" + contractCategory);
+                }
+            } catch (Exception e) {
+                log.error("智书13Sheet历史合同合同类型校验异常，contract_number={}，flowType={}，contractCategory={}，错误={}",
+                        contractNumber, contractGroup.getFlowType().getDesc(), contractCategory, e.getMessage(), e);
+                errors.add("contractCategory校验异常：" + buildExceptionMessage(e));
+            }
+        }
+
+        String createUserId = resolveCreateUserId(contractGroup);
+        if (createUserId == null) {
+            errors.add("create_user_id为空且配置userId为空");
+        }
+
+        ContractFileIds contractFileIds = buildValidationAntiBriberyContractFileIds(contractNumber, context, errors);
+        ZhishuCreateContractRequest createRequest = null;
+        try {
+            createRequest = buildCreateContractRequest(contractGroup, createUserId, contractCategoryAbbreviation,
+                    customFieldValues, contractFileIds, context);
+        } catch (Exception e) {
+            log.error("智书13Sheet历史合同创建请求构建校验异常，contract_number={}，flowType={}，错误={}",
+                    contractNumber, contractGroup.getFlowType().getDesc(), e.getMessage(), e);
+            errors.add("创建请求构建异常：" + buildExceptionMessage(e));
+        }
+        validateCreateContractRequest(createRequest, errors);
+        return OneContractValidationResult.of(errors);
+    }
+
+    private ContractFileIds buildValidationAntiBriberyContractFileIds(String contractNumber,
+                                                                      SyncContext context,
+                                                                      List<String> errors) {
+        ContractFileIds result = new ContractFileIds();
+        AntiBriberyContractFiles fallbackFiles = findAntiBriberyContractFiles(contractNumber, context);
+        Path fallbackDirectory = resolveFallbackContractDirectory(contractNumber, context);
+        if (fallbackFiles.getMainFiles().isEmpty()) {
+            errors.add("合同主文件缺失，主文件目录未找到可用文件：" + fallbackFiles.getMainDirectory());
+            return result;
+        }
+
+        log.info("智书反商业贿赂协议历史合同校验分类目录文件，contract_number={}，fallbackDir={}，mainCount={}，scanCount={}，attachmentCount={}",
+                contractNumber, fallbackDirectory, fallbackFiles.getMainFiles().size(),
+                fallbackFiles.getScanFiles().size(), fallbackFiles.getAttachmentFiles().size());
+        result.setTextFileId("VALIDATION_TEXT_FILE_ID");
+        if (!fallbackFiles.getScanFiles().isEmpty()) {
+            result.setScanFileId("VALIDATION_SCAN_FILE_ID");
+        }
+        for (int index = 1; index < fallbackFiles.getMainFiles().size(); index++) {
+            result.addAttachmentFileId("VALIDATION_MAIN_ATTACHMENT_FILE_ID_" + index);
+        }
+        for (int index = 1; index < fallbackFiles.getScanFiles().size(); index++) {
+            result.addAttachmentFileId("VALIDATION_SCAN_ATTACHMENT_FILE_ID_" + index);
+        }
+        for (int index = 0; index < fallbackFiles.getAttachmentFiles().size(); index++) {
+            result.addAttachmentFileId("VALIDATION_ATTACHMENT_FILE_ID_" + index);
+        }
+        return result;
+    }
+
+    private void validateCreateContractRequest(ZhishuCreateContractRequest request, List<String> errors) {
+        if (request == null) {
+            return;
+        }
+        addBlankError(errors, request.getContractNumber(), "contract_number不能为空");
+        addBlankError(errors, request.getContractName(), "contract_name不能为空");
+        addBlankError(errors, request.getContractCategoryAbbreviation(), "contract_category_abbreviation不能为空");
+        addBlankError(errors, request.getCreateUserId(), "create_user_id不能为空");
+        addBlankError(errors, request.getContractStatusCode(), "contract_status_code不能为空");
+        if (request.getBusinessTypeCode() == null) {
+            addErrorIfAbsent(errors, "business_type_code不能为空");
+        }
+        if (request.getPayTypeCode() == null) {
+            addErrorIfAbsent(errors, "pay_type_code不能为空");
+        } else if (request.getPayTypeCode() < 1 || request.getPayTypeCode() > 4) {
+            addErrorIfAbsent(errors, "pay_type_code不合法：" + request.getPayTypeCode());
+        }
+        addBlankError(errors, request.getCurrencyCode(), "currency_code不能为空");
+        if (isIncomePayType(request.getPayTypeCode())) {
+            addBlankError(errors, request.getInCurrencyCode(), "收入类合同in_currency_code不能为空");
+        }
+        if (isExpensePayType(request.getPayTypeCode())) {
+            addBlankError(errors, request.getOutCurrencyCode(), "支出类合同out_currency_code不能为空");
+        }
+        if ((Integer.valueOf(1).equals(request.getPayTypeCode()) || Integer.valueOf(2).equals(request.getPayTypeCode()))
+                && request.getPropertyTypeCode() == null) {
+            addErrorIfAbsent(errors, "收入类或支出类合同property_type_code不能为空");
+        }
+        if (request.getFixedValidityCode() == null) {
+            addErrorIfAbsent(errors, "fixed_validity_code不能为空");
+        } else if (!Integer.valueOf(1).equals(request.getFixedValidityCode())
+                && !Integer.valueOf(2).equals(request.getFixedValidityCode())) {
+            addErrorIfAbsent(errors, "fixed_validity_code不合法：" + request.getFixedValidityCode());
+        }
+        if (Integer.valueOf(1).equals(request.getFixedValidityCode())) {
+            validateRequiredDate(errors, request.getStartDate(), "start_date");
+            validateRequiredDate(errors, request.getEndDate(), "end_date");
+        }
+        validatePartyList(errors, request.getOurPartyList(), true);
+        validatePartyList(errors, request.getCounterPartyList(), false);
+        addBlankError(errors, request.getTextFileId(), "text_file_id不能为空");
+        validatePaymentPlans(errors, request.getPaymentPlanList());
+        validateCollectionPlans(errors, request.getCollectionPlanList());
+    }
+
+    private boolean isIncomePayType(Integer payTypeCode) {
+        return Integer.valueOf(1).equals(payTypeCode) || Integer.valueOf(3).equals(payTypeCode);
+    }
+
+    private boolean isExpensePayType(Integer payTypeCode) {
+        return Integer.valueOf(2).equals(payTypeCode) || Integer.valueOf(3).equals(payTypeCode);
+    }
+
+    private void validatePartyList(List<String> errors,
+                                   List<? extends Object> partyList,
+                                   boolean ourParty) {
+        String listName = ourParty ? "our_party_list" : "counter_party_list";
+        if (partyList == null || partyList.isEmpty()) {
+            addErrorIfAbsent(errors, listName + "不能为空");
+            return;
+        }
+        for (int index = 0; index < partyList.size(); index++) {
+            Object item = partyList.get(index);
+            String code;
+            if (ourParty) {
+                code = item instanceof ZhishuCreateContractRequest.OurPartyInfo
+                        ? ((ZhishuCreateContractRequest.OurPartyInfo) item).getOurPartyCode() : null;
+            } else {
+                code = item instanceof ZhishuCreateContractRequest.CounterPartyInfo
+                        ? ((ZhishuCreateContractRequest.CounterPartyInfo) item).getCounterPartyCode() : null;
+            }
+            addBlankError(errors, code, listName + "[" + index + "]编码不能为空");
+        }
+    }
+
+    private void validatePaymentPlans(List<String> errors,
+                                      List<ZhishuCreateContractRequest.PaymentPlanInfo> paymentPlanList) {
+        if (paymentPlanList == null || paymentPlanList.isEmpty()) {
+            return;
+        }
+        for (int index = 0; index < paymentPlanList.size(); index++) {
+            ZhishuCreateContractRequest.PaymentPlanInfo plan = paymentPlanList.get(index);
+            validateRequiredDate(errors, plan.getPaymentDate(), "payment_plan_list[" + index + "].payment_date");
+            if (plan.getPaymentAmount() == null) {
+                addErrorIfAbsent(errors, "payment_plan_list[" + index + "].payment_amount不能为空");
+            }
+            addBlankError(errors, plan.getCurrencyCode(), "payment_plan_list[" + index + "].currency_code不能为空");
+            if (plan.getPaymentCounterParty() == null
+                    || trimToNull(plan.getPaymentCounterParty().getCounterPartyCode()) == null) {
+                addErrorIfAbsent(errors, "payment_plan_list[" + index + "].payment_counter_party不能为空");
+            }
+        }
+    }
+
+    private void validateCollectionPlans(List<String> errors,
+                                         List<ZhishuCreateContractRequest.CollectionPlanInfo> collectionPlanList) {
+        if (collectionPlanList == null || collectionPlanList.isEmpty()) {
+            return;
+        }
+        for (int index = 0; index < collectionPlanList.size(); index++) {
+            ZhishuCreateContractRequest.CollectionPlanInfo plan = collectionPlanList.get(index);
+            validateRequiredDate(errors, plan.getCollectionDate(), "collection_plan_list[" + index + "].collection_date");
+            if (plan.getCollectionAmount() == null) {
+                addErrorIfAbsent(errors, "collection_plan_list[" + index + "].collection_amount不能为空");
+            }
+            addBlankError(errors, plan.getCurrencyCode(), "collection_plan_list[" + index + "].currency_code不能为空");
+            if (plan.getCollectionCounterParty() == null
+                    || trimToNull(plan.getCollectionCounterParty().getCounterPartyCode()) == null) {
+                addErrorIfAbsent(errors, "collection_plan_list[" + index + "].collection_counter_party不能为空");
+            }
+        }
+    }
+
+    private void validateRequiredDate(List<String> errors, String date, String fieldName) {
+        if (trimToNull(date) == null) {
+            addErrorIfAbsent(errors, fieldName + "不能为空");
+            return;
+        }
+        if (!isValidDate(date)) {
+            addErrorIfAbsent(errors, fieldName + "日期格式不合法：" + date);
+        }
+    }
+
+    private boolean isValidDate(String date) {
+        String value = trimToNull(date);
+        if (value == null) {
+            return false;
+        }
+        for (String pattern : Arrays.asList("yyyy-MM-dd", "yyyy/M/d", "yyyy/MM/dd")) {
+            try {
+                SimpleDateFormat format = new SimpleDateFormat(pattern);
+                format.setLenient(false);
+                format.parse(value);
+                return true;
+            } catch (Exception ignored) {
+            }
+        }
+        return false;
+    }
+
+    private void addBlankError(List<String> errors, String value, String error) {
+        if (trimToNull(value) == null) {
+            addErrorIfAbsent(errors, error);
+        }
+    }
+
+    private void addErrorIfAbsent(List<String> errors, String error) {
+        if (error != null && !errors.contains(error)) {
+            errors.add(error);
         }
     }
 
@@ -4322,7 +4747,45 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
         }
     }
 
+    private void copyHistorySyncFailures(HistoryContractValidateResultDTO target,
+                                         HistoryContractSyncResultDTO source) {
+        if (source == null || source.getFailures() == null) {
+            return;
+        }
+        for (HistoryContractSyncResultDTO.Failure failure : source.getFailures()) {
+            if (failure == null) {
+                continue;
+            }
+            target.addFailure(failure.getContractNumber(), failure.getFlowType(), failure.getReason());
+        }
+    }
+
+    private void mergeHistoryValidateResult(HistoryContractValidateResultDTO mergedResult,
+                                            HistoryContractValidateResultDTO batchResult) {
+        if (batchResult == null) {
+            return;
+        }
+        if (batchResult.getSuccessContractNumbers() != null) {
+            for (String contractNumber : batchResult.getSuccessContractNumbers()) {
+                mergedResult.addSuccess(contractNumber);
+            }
+        }
+        if (batchResult.getFailures() != null) {
+            for (HistoryContractValidateResultDTO.Failure failure : batchResult.getFailures()) {
+                if (failure == null) {
+                    continue;
+                }
+                mergedResult.addFailure(failure.getContractNumber(), failure.getFlowType(), failure.getErrors());
+            }
+        }
+    }
+
     private void finishHistoryMultiThreadResult(HistoryContractSyncResultDTO result, long startTime) {
+        result.setElapsedMillis(System.currentTimeMillis() - startTime);
+        result.refreshTotalCount();
+    }
+
+    private void finishHistoryValidateResult(HistoryContractValidateResultDTO result, long startTime) {
         result.setElapsedMillis(System.currentTimeMillis() - startTime);
         result.refreshTotalCount();
     }
@@ -5270,6 +5733,22 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
 
         private String getReason() {
             return reason;
+        }
+    }
+
+    private static class OneContractValidationResult {
+        private final List<String> errors;
+
+        private OneContractValidationResult(List<String> errors) {
+            this.errors = errors == null ? Collections.emptyList() : new ArrayList<>(errors);
+        }
+
+        private static OneContractValidationResult of(List<String> errors) {
+            return new OneContractValidationResult(errors);
+        }
+
+        private List<String> getErrors() {
+            return errors;
         }
     }
 

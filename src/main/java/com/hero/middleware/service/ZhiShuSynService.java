@@ -5,6 +5,7 @@ import com.hero.middleware.dto.ApproveContractToNodeResultDTO;
 import com.hero.middleware.dto.DeleteDraftContractsResultDTO;
 import com.hero.middleware.dto.HistoryContractSyncDTO;
 import com.hero.middleware.dto.HistoryContractSyncResultDTO;
+import com.hero.middleware.dto.HistoryContractValidateResultDTO;
 import com.hero.middleware.dto.YeCaiContractSyncDTO;
 import com.hero.middleware.dto.YeCaiContractSyncResultDTO;
 
@@ -23,6 +24,8 @@ public interface ZhiShuSynService {
     HistoryContractSyncResultDTO syncHistoryContracts(HistoryContractSyncDTO request);
 
     HistoryContractSyncResultDTO syncHistoryContractsMultiThread(HistoryContractSyncDTO request);
+
+    HistoryContractValidateResultDTO validateHistoryContractsMultiThread(HistoryContractSyncDTO request);
 
     YeCaiContractSyncResultDTO syncYeCaiContracts(YeCaiContractSyncDTO request);
 

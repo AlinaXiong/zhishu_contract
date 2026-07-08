@@ -7,6 +7,7 @@ import com.hero.middleware.dto.ApproveContractToNodeResultDTO;
 import com.hero.middleware.dto.DeleteDraftContractsResultDTO;
 import com.hero.middleware.dto.HistoryContractSyncDTO;
 import com.hero.middleware.dto.HistoryContractSyncResultDTO;
+import com.hero.middleware.dto.HistoryContractValidateResultDTO;
 import com.hero.middleware.dto.YeCaiContractSyncDTO;
 import com.hero.middleware.dto.YeCaiContractSyncResultDTO;
 import com.hero.middleware.service.ZhiShuSynService;
@@ -54,6 +55,21 @@ public class ContractSynController {
         }
         HistoryContractSyncResultDTO result = zhiShuSynService.syncHistoryContractsMultiThread(request);
         log.info("智书历史合同多线程同步请求处理完成，结果：{}", result);
+        return Result.success(result);
+    }
+
+    @ApiOperation("多线程校验历史合同到智书")
+    @PostMapping("/history/multi-thread/validate")
+    public Result<HistoryContractValidateResultDTO> validateHistoryContractsMultiThread(
+            @RequestBody(required = false) HistoryContractSyncDTO request) {
+        log.info("接收智书历史合同多线程校验请求，请求参数：{}", request);
+        String validateMessage = validateMultiThreadHistorySyncRequest(request);
+        if (validateMessage != null) {
+            log.warn("智书历史合同多线程校验请求参数错误：{}", validateMessage);
+            return Result.error(400, validateMessage);
+        }
+        HistoryContractValidateResultDTO result = zhiShuSynService.validateHistoryContractsMultiThread(request);
+        log.info("智书历史合同多线程校验请求处理完成，结果：{}", result);
         return Result.success(result);
     }
 
