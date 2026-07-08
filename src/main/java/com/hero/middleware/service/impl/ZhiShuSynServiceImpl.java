@@ -43,6 +43,7 @@ import com.hero.middleware.dto.ContractSyncDTO;
 import com.hero.middleware.dto.HistoryContractValidateResultDTO;
 import com.hero.middleware.dto.YeCaiContractSyncDTO;
 import com.hero.middleware.dto.YeCaiContractSyncResultDTO;
+import com.hero.middleware.entity.ApiLogRecord;
 import com.hero.middleware.enums.BankChargePayerEnum;
 import com.hero.middleware.enums.ContractCategoryMappingEnum;
 import com.hero.middleware.enums.FormAttributeTypeEnum;
@@ -52,6 +53,7 @@ import com.hero.middleware.enums.PlatformEnum;
 import com.hero.middleware.enums.PrintModeEnum;
 import com.hero.middleware.enums.TaxItemEnum;
 import com.hero.middleware.enums.ZhishuAndYecaiFiledEnum;
+import com.hero.middleware.mapper.ApiLogRecordMapper;
 import com.hero.middleware.service.ZhiShuSynService;
 import com.hero.middleware.service.ContractService;
 import com.hero.middleware.utils.DateUtils;
@@ -91,6 +93,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -172,6 +175,20 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
     private static final String DOCUMENT_LIST_URL = "/exp/requisition/list";
     private static final String ORDER_INFO_URL = "/project/order-query/list";
     private static final String ANCHOR_CARD_URL = "/hfbs/anchor-doc/document";
+    private static final String HISTORY_CONTRACT_IMPORT_API_NAME = "history-contract-import-to-zhishu";
+    private static final String HISTORY_CONTRACT_IMPORT_API_DESCRIPTION = "History contract import result";
+    private static final String HISTORY_CONTRACT_IMPORT_REQUEST_METHOD = "INTERNAL";
+    private static final String HISTORY_CONTRACT_IMPORT_REQUEST_URL = "/api/contract/syn/history";
+    private static final String HISTORY_CONTRACT_IMPORT_MULTI_THREAD_REQUEST_URL =
+            "/api/contract/syn/history/multi-thread";
+    private static final String HISTORY_ANTI_BRIBERY_IMPORT_REQUEST_URL =
+            "/api/contract/syn/history/anti-bribery";
+    private static final int API_LOG_STATUS_SUCCESS = 1;
+    private static final int API_LOG_STATUS_FAIL = 0;
+    private static final int API_LOG_HTTP_STATUS_SUCCESS = 200;
+    private static final int API_LOG_HTTP_STATUS_FAIL = 500;
+    private static final int API_LOG_MAX_TEXT_LENGTH = 20000;
+    private static final int API_LOG_MAX_ERROR_MESSAGE_LENGTH = 2000;
     private static final String ACCEPTANCE_REQUIRED_YES_CODE = "cmp0y2rse004e3b716tihbjhf";
     private static final String ACCEPTANCE_REQUIRED_NO_CODE = "cmp0y2rse004f3b71rrqup04i";
     private static final String CONTRACT_NOT_FOUND_EXPORT_DIR = "file";
@@ -198,6 +215,9 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
     @Autowired
     private ContractService contractService;
 
+    @Autowired(required = false)
+    private ApiLogRecordMapper apiLogRecordMapper;
+
     private final String historyContractExcelPath;
     private final int batchSize;
     private Path contractFileFallbackRoot = Paths.get(DEFAULT_CONTRACT_FILE_FALLBACK_ROOT);
@@ -222,11 +242,12 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
         Set<String> contractNumberFilter = resolveContractNumberFilter(actualRequest);
         String excelPath = resolveExcelPath(actualRequest.getResolvedFilePath());
         SyncContext context = buildSyncContext(actualRequest);
+        ContractIndex contractIndex = null;
 
         log.info("智书13Sheet历史合同同步开始，excelPath={}，过滤合同编码={}", excelPath, contractNumberFilter);
         try {
             context.setCounterPartyCodeLookup(loadCounterPartyCodeLookup());
-            ContractIndex contractIndex = scanContractIndex(excelPath);
+            contractIndex = scanContractIndex(excelPath);
             Set<String> initialTargetKeys = resolveTargetGroupKeys(contractNumberFilter, contractIndex, context);
             Set<String> expandedTargetKeys = expandRelationDependencies(initialTargetKeys, contractIndex);
             ContractSyncOrder syncOrder = sortByDependencies(expandedTargetKeys, contractIndex);
@@ -243,6 +264,8 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
         HistoryContractSyncResultDTO result = context.getResult();
         result.setElapsedMillis(elapsedMillis);
         result.refreshTotalCount();
+        recordHistoryContractImportLogs(actualRequest, HISTORY_CONTRACT_IMPORT_REQUEST_URL, excelPath, result,
+                buildFlowTypesByContractNumber(contractIndex), null);
         log.info("智书13Sheet历史合同同步结束，总数={}，成功数={}，失败数={}，成功合同编码={}，失败明细={}，耗时={}ms",
                 result.getTotalCount(), result.getSuccessCount(), result.getFailCount(),
                 result.getSuccessContractNumbers(), JSON.toJSONString(result.getFailures()), elapsedMillis);
@@ -260,6 +283,8 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
         } catch (Exception e) {
             mergedResult.addFailure("ALL", null, e.getMessage());
             finishHistoryMultiThreadResult(mergedResult, startTime);
+            recordHistoryContractImportLogs(actualRequest, HISTORY_CONTRACT_IMPORT_MULTI_THREAD_REQUEST_URL,
+                    trimToNull(actualRequest.getResolvedFilePath()), mergedResult, Collections.emptyMap(), null);
             return mergedResult;
         }
         String excelPath = trimToNull(actualRequest.getResolvedFilePath());
@@ -267,16 +292,22 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
         if (contractNumberSet.isEmpty()) {
             mergedResult.addFailure("ALL", null, "合同编码集合和txt文件地址不能同时为空");
             finishHistoryMultiThreadResult(mergedResult, startTime);
+            recordHistoryContractImportLogs(actualRequest, HISTORY_CONTRACT_IMPORT_MULTI_THREAD_REQUEST_URL,
+                    excelPath, mergedResult, Collections.emptyMap(), null);
             return mergedResult;
         }
         if (excelPath == null) {
             mergedResult.addFailure("ALL", null, "导入模板地址不能为空");
             finishHistoryMultiThreadResult(mergedResult, startTime);
+            recordHistoryContractImportLogs(actualRequest, HISTORY_CONTRACT_IMPORT_MULTI_THREAD_REQUEST_URL,
+                    excelPath, mergedResult, Collections.emptyMap(), null);
             return mergedResult;
         }
         if (fallbackRoot == null) {
             mergedResult.addFailure("ALL", null, "合同附件查询根路径不能为空");
             finishHistoryMultiThreadResult(mergedResult, startTime);
+            recordHistoryContractImportLogs(actualRequest, HISTORY_CONTRACT_IMPORT_MULTI_THREAD_REQUEST_URL,
+                    excelPath, mergedResult, Collections.emptyMap(), null);
             return mergedResult;
         }
 
@@ -312,7 +343,11 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
                     log.error("智书13Sheet历史合同多线程同步第{}批异常，合同编码={}，错误={}",
                             index + 1, JSON.toJSONString(batchContractNumbers), e.getMessage(), e);
                     for (String contractNumber : batchContractNumbers) {
-                        mergedResult.addFailure(contractNumber, null, "批次同步异常：" + e.getMessage());
+                        String reason = "批次同步异常：" + e.getMessage();
+                        mergedResult.addFailure(contractNumber, null, reason);
+                        recordHistoryContractImportLog(actualRequest,
+                                HISTORY_CONTRACT_IMPORT_MULTI_THREAD_REQUEST_URL, excelPath, contractNumber,
+                                null, false, reason, null);
                     }
                 }
             }
@@ -755,12 +790,82 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
             if (submitResponse == null || !submitResponse.isSuccess()
                     || submitResponse.getData() == null
                     || trimToNull(submitResponse.getData().getProcessInstanceId()) == null) {
-                return ApproveToNodeItemResult.fail("提交合同失败：" + JSON.toJSONString(submitResponse));
+                return ApproveToNodeItemResult.fail(buildSubmitContractFailureReason(submitResponse));
             }
             processInstanceId = trimToNull(submitResponse.getData().getProcessInstanceId());
         }
 
         return advanceApprovalToNode(contractNumber, contractId, processInstanceId, targetNodeName);
+    }
+
+    private String buildSubmitContractFailureReason(SubmitContractResponse response) {
+        if (response == null) {
+            return "提交合同失败：智书返回为空";
+        }
+        String invalidAttributeReason = buildInvalidAttributeReason(response);
+        if (invalidAttributeReason != null) {
+            return "提交合同失败：" + firstNotBlank(response.getMsg(), "智书合同提交校验失败")
+                    + "，具体原因：" + invalidAttributeReason;
+        }
+        if (response.isSuccess()) {
+            return "提交合同失败：智书返回缺少流程实例ID，返回=" + JSON.toJSONString(response);
+        }
+        return "提交合同失败：" + JSON.toJSONString(response);
+    }
+
+    private String buildInvalidAttributeReason(SubmitContractResponse response) {
+        if (response == null || response.getData() == null
+                || response.getData().getInvalidAttributeList() == null
+                || response.getData().getInvalidAttributeList().isEmpty()) {
+            return null;
+        }
+        List<String> reasons = new ArrayList<>();
+        for (SubmitContractResponse.InvalidAttribute invalidAttribute :
+                response.getData().getInvalidAttributeList()) {
+            if (invalidAttribute == null) {
+                continue;
+            }
+            reasons.add(buildInvalidAttributeItemReason(invalidAttribute));
+        }
+        if (reasons.isEmpty()) {
+            return null;
+        }
+        return String.join("；", reasons);
+    }
+
+    private String buildInvalidAttributeItemReason(SubmitContractResponse.InvalidAttribute invalidAttribute) {
+        List<String> path = new ArrayList<>();
+        addIfNotBlank(path, invalidAttribute.getModuleName());
+        addIfNotBlank(path, invalidAttribute.getGroupName());
+        addIfNotBlank(path, invalidAttribute.getAttributeName());
+
+        String fieldPath = path.isEmpty()
+                ? firstNotBlank(invalidAttribute.getAttributeKey(), "未知字段")
+                : String.join("/", path);
+        String reason = formatInvalidAttributeReason(invalidAttribute.getReason());
+        String attributeKey = trimToNull(invalidAttribute.getAttributeKey());
+        if (attributeKey == null) {
+            return fieldPath + reason;
+        }
+        return fieldPath + reason + "（attribute_key=" + attributeKey + "）";
+    }
+
+    private void addIfNotBlank(List<String> values, String value) {
+        String text = trimToNull(value);
+        if (text != null) {
+            values.add(text);
+        }
+    }
+
+    private String formatInvalidAttributeReason(String reason) {
+        String text = trimToNull(reason);
+        if (text == null) {
+            return "校验失败";
+        }
+        if ("EMPTY".equalsIgnoreCase(text)) {
+            return "为空";
+        }
+        return "校验失败：" + text;
     }
 
     private ContractQueryResponse findSingleContractByNumber(String contractNumber) {
@@ -1005,6 +1110,8 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
         long elapsedMillis = System.currentTimeMillis() - startTime;
         result.setElapsedMillis(elapsedMillis);
         result.refreshTotalCount();
+        recordHistoryContractImportLogs(actualRequest, HISTORY_ANTI_BRIBERY_IMPORT_REQUEST_URL, excelPath, result,
+                Collections.emptyMap(), ANTI_BRIBERY_FLOW_TYPE);
         log.info("智书反商业贿赂协议历史合同同步结束，总数={}，成功数={}，失败数={}，成功合同编码={}，失败明细={}，耗时={}ms",
                 result.getTotalCount(), result.getSuccessCount(), result.getFailCount(),
                 result.getSuccessContractNumbers(), JSON.toJSONString(result.getFailures()), elapsedMillis);
@@ -4788,6 +4895,168 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
     private void finishHistoryValidateResult(HistoryContractValidateResultDTO result, long startTime) {
         result.setElapsedMillis(System.currentTimeMillis() - startTime);
         result.refreshTotalCount();
+    }
+
+    private void recordHistoryContractImportLogs(HistoryContractSyncDTO request,
+                                                 String requestUrl,
+                                                 String excelPath,
+                                                 HistoryContractSyncResultDTO result,
+                                                 Map<String, String> flowTypesByContractNumber,
+                                                 String defaultFlowType) {
+        if (result == null) {
+            return;
+        }
+        if (result.getSuccessContractNumbers() != null) {
+            for (String contractNumber : result.getSuccessContractNumbers()) {
+                recordHistoryContractImportLog(request, requestUrl, excelPath, contractNumber,
+                        resolveHistoryContractFlowType(contractNumber, null, flowTypesByContractNumber, defaultFlowType),
+                        true, null, result.getElapsedMillis());
+            }
+        }
+        if (result.getFailures() == null) {
+            return;
+        }
+        for (HistoryContractSyncResultDTO.Failure failure : result.getFailures()) {
+            if (failure == null) {
+                continue;
+            }
+            String contractNumber = failure.getContractNumber();
+            String flowType = resolveHistoryContractFlowType(contractNumber, failure.getFlowType(),
+                    flowTypesByContractNumber, defaultFlowType);
+            recordHistoryContractImportLog(request, requestUrl, excelPath, contractNumber, flowType,
+                    false, failure.getReason(), result.getElapsedMillis());
+        }
+    }
+
+    private void recordHistoryContractImportLog(HistoryContractSyncDTO request,
+                                                String requestUrl,
+                                                String excelPath,
+                                                String contractNumber,
+                                                String flowType,
+                                                boolean success,
+                                                String reason,
+                                                Long elapsedMillis) {
+        if (apiLogRecordMapper == null) {
+            return;
+        }
+        try {
+            ApiLogRecord logRecord = new ApiLogRecord();
+            logRecord.setTraceId(UUID.randomUUID().toString().replace("-", ""));
+            logRecord.setApiName(HISTORY_CONTRACT_IMPORT_API_NAME);
+            logRecord.setApiDescription(HISTORY_CONTRACT_IMPORT_API_DESCRIPTION);
+            logRecord.setRequestMethod(HISTORY_CONTRACT_IMPORT_REQUEST_METHOD);
+            logRecord.setRequestUrl(requestUrl);
+            logRecord.setRequestParams(toApiLogJson(buildHistoryContractImportRequestParams(
+                    request, excelPath, contractNumber, flowType)));
+            logRecord.setResponseParams(toApiLogJson(buildHistoryContractImportResponseParams(
+                    contractNumber, flowType, success, reason)));
+            logRecord.setExecuteTime(elapsedMillis);
+            logRecord.setHttpStatus(success ? API_LOG_HTTP_STATUS_SUCCESS : API_LOG_HTTP_STATUS_FAIL);
+            logRecord.setStatus(success ? API_LOG_STATUS_SUCCESS : API_LOG_STATUS_FAIL);
+            logRecord.setErrorMessage(success ? null : truncateApiLogText(reason, API_LOG_MAX_ERROR_MESSAGE_LENGTH));
+            logRecord.setCreateTime(LocalDateTime.now());
+            apiLogRecordMapper.insert(logRecord);
+        } catch (Exception e) {
+            log.error("Save history contract import result to t_api_log failed, contractNumber={}, error={}",
+                    contractNumber, e.getMessage(), e);
+        }
+    }
+
+    private Map<String, Object> buildHistoryContractImportRequestParams(HistoryContractSyncDTO request,
+                                                                        String excelPath,
+                                                                        String contractNumber,
+                                                                        String flowType) {
+        Map<String, Object> params = new LinkedHashMap<>();
+        params.put("contractNumber", contractNumber);
+        params.put("flowType", flowType);
+        params.put("excelPath", excelPath);
+        if (request != null) {
+            params.put("contractNumberFilePath", request.getContractNumberFilePath());
+            params.put("contractFileFallbackRoot", request.getContractFileFallbackRoot());
+            params.put("contractStatusCode", resolveContractStatusCode(request));
+            params.put("requestContractCount", request.getContractNumbers() == null
+                    ? 0 : request.getContractNumbers().size());
+        }
+        return params;
+    }
+
+    private Map<String, Object> buildHistoryContractImportResponseParams(String contractNumber,
+                                                                         String flowType,
+                                                                         boolean success,
+                                                                         String reason) {
+        Map<String, Object> params = new LinkedHashMap<>();
+        params.put("contractNumber", contractNumber);
+        params.put("flowType", flowType);
+        params.put("importedToZhishu", success);
+        params.put("result", success ? "SUCCESS" : "FAIL");
+        if (!success) {
+            params.put("reason", reason);
+        }
+        return params;
+    }
+
+    private Map<String, String> buildFlowTypesByContractNumber(ContractIndex contractIndex) {
+        if (contractIndex == null || contractIndex.getEntriesByGroupKey() == null
+                || contractIndex.getEntriesByGroupKey().isEmpty()) {
+            return Collections.emptyMap();
+        }
+        Map<String, String> flowTypesByContractNumber = new LinkedHashMap<>();
+        for (ContractIndexEntry entry : contractIndex.getEntriesByGroupKey().values()) {
+            if (entry == null) {
+                continue;
+            }
+            String contractNumber = entry.getContractNumber();
+            String flowType = entry.getFlowType() == null ? null : entry.getFlowType().getDesc();
+            if (contractNumber == null || flowType == null) {
+                continue;
+            }
+            String existingFlowType = flowTypesByContractNumber.get(contractNumber);
+            if (existingFlowType == null) {
+                flowTypesByContractNumber.put(contractNumber, flowType);
+            } else if (!containsDelimitedValue(existingFlowType, flowType)) {
+                flowTypesByContractNumber.put(contractNumber, existingFlowType + "," + flowType);
+            }
+        }
+        return flowTypesByContractNumber;
+    }
+
+    private String resolveHistoryContractFlowType(String contractNumber,
+                                                  String flowType,
+                                                  Map<String, String> flowTypesByContractNumber,
+                                                  String defaultFlowType) {
+        String indexedFlowType = null;
+        if (contractNumber != null && flowTypesByContractNumber != null) {
+            indexedFlowType = flowTypesByContractNumber.get(contractNumber);
+        }
+        return firstNotBlank(flowType, indexedFlowType, defaultFlowType);
+    }
+
+    private boolean containsDelimitedValue(String values, String value) {
+        if (values == null || value == null) {
+            return false;
+        }
+        String[] parts = values.split(",");
+        for (String part : parts) {
+            if (value.equals(part == null ? null : part.trim())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private String toApiLogJson(Object value) {
+        try {
+            return truncateApiLogText(JSON.toJSONString(value), API_LOG_MAX_TEXT_LENGTH);
+        } catch (Exception e) {
+            return truncateApiLogText("JSON serialize failed: " + e.getMessage(), API_LOG_MAX_TEXT_LENGTH);
+        }
+    }
+
+    private String truncateApiLogText(String value, int maxLength) {
+        if (value == null || maxLength <= 0 || value.length() <= maxLength) {
+            return value;
+        }
+        return value.substring(0, maxLength);
     }
 
     private boolean isSameConvertedValue(Object first, Object second) {

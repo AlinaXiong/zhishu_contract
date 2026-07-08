@@ -87,6 +87,26 @@ class ZhiShuSynServiceApproveToNodeTest {
     }
 
     @Test
+    void approveContractsToNodeShowsSubmitValidationDetails() {
+        ZhiShuSynServiceImpl service = buildService();
+        when(zhishuContractClient.searchContracts(any()))
+                .thenReturn(searchResponse(contract("C-001", 100L, 0, "editing", null)));
+        when(zhishuContractClient.submitContract("100")).thenReturn(submitValidationFailureResponse());
+
+        ApproveContractToNodeResultDTO result =
+                service.approveContractsToNode(Collections.singleton("C-001"), TARGET_NODE);
+
+        assertEquals(Integer.valueOf(0), result.getSuccessCount());
+        assertEquals(Integer.valueOf(1), result.getFailCount());
+        String reason = result.getFailures().get(0).getReason();
+        assertTrue(reason.contains("合同提交校验失败"));
+        assertTrue(reason.contains("关联合同/关联合同为空"));
+        assertTrue(reason.contains("履约计划/付款计划/付款性质为空"));
+        assertTrue(reason.contains("attribute_key=associated_contract"));
+        assertTrue(reason.contains("attribute_key=custom_15_071a641657e94f2faf65bf973850166e"));
+    }
+
+    @Test
     void approveContractsToNodeFailsWhenContractIsMissing() {
         ZhiShuSynServiceImpl service = buildService();
         when(zhishuContractClient.searchContracts(any()))
@@ -227,10 +247,41 @@ class ZhiShuSynServiceApproveToNodeTest {
         return response;
     }
 
+    private SubmitContractResponse submitValidationFailureResponse() {
+        SubmitContractResponse response = new SubmitContractResponse();
+        response.setCode(111761);
+        response.setMsg("合同提交校验失败");
+
+        SubmitContractResponse.InvalidAttribute relation = invalidAttribute(
+                "关联合同", "", "关联合同", "EMPTY", "associated_contract");
+        SubmitContractResponse.InvalidAttribute paymentType = invalidAttribute(
+                "履约计划", "付款计划", "付款性质", "EMPTY",
+                "custom_15_071a641657e94f2faf65bf973850166e");
+
+        SubmitContractResponse.DataInfo dataInfo = new SubmitContractResponse.DataInfo();
+        dataInfo.setInvalidAttributeList(Arrays.asList(relation, paymentType));
+        response.setData(dataInfo);
+        return response;
+    }
+
+    private SubmitContractResponse.InvalidAttribute invalidAttribute(String moduleName,
+                                                                     String groupName,
+                                                                     String attributeName,
+                                                                     String reason,
+                                                                     String attributeKey) {
+        SubmitContractResponse.InvalidAttribute invalidAttribute = new SubmitContractResponse.InvalidAttribute();
+        invalidAttribute.setModuleName(moduleName);
+        invalidAttribute.setGroupName(groupName);
+        invalidAttribute.setAttributeName(attributeName);
+        invalidAttribute.setReason(reason);
+        invalidAttribute.setAttributeKey(attributeKey);
+        return invalidAttribute;
+    }
+
     private ApprovalQueryResponse approvalQuery(String taskId,
-                                                String nodeName,
-                                                String endTime,
-                                                String assigneeId) {
+                                                 String nodeName,
+                                                 String endTime,
+                                                 String assigneeId) {
         ApprovalQueryResponse response = new ApprovalQueryResponse();
         response.setCode(0);
         response.setMsg("success");
