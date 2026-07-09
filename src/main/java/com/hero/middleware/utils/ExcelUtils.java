@@ -1,6 +1,7 @@
 package com.hero.middleware.utils;
 
 import org.apache.poi.openxml4j.opc.OPCPackage;
+import org.apache.poi.openxml4j.opc.PackageAccess;
 import org.apache.poi.ooxml.util.SAXHelper;
 import org.apache.poi.ss.usermodel.Cell;
 import org.apache.poi.ss.usermodel.CellType;
@@ -22,6 +23,7 @@ import org.xml.sax.SAXException;
 import org.xml.sax.XMLReader;
 import org.xml.sax.helpers.DefaultHandler;
 
+import java.io.File;
 import java.io.InputStream;
 import java.lang.reflect.Field;
 import java.math.BigDecimal;
@@ -230,7 +232,7 @@ public class ExcelUtils {
 
     private static void readXlsxByRow(String filePath, int sheetIndex, int headerRowIndex,
                                       int startRowIndex, Integer maxRows, ExcelRowHandler rowHandler) {
-        try (OPCPackage opcPackage = OPCPackage.open(filePath)) {
+        try (OPCPackage opcPackage = OPCPackage.open(new File(filePath), PackageAccess.READ)) {
             ReadOnlySharedStringsTable sharedStringsTable = new ReadOnlySharedStringsTable(opcPackage);
             XSSFReader reader = new XSSFReader(opcPackage);
             StylesTable stylesTable = reader.getStylesTable();
@@ -256,7 +258,7 @@ public class ExcelUtils {
 
     private static void readXlsxAllSheetsByRow(String filePath, int headerRowIndex, int startRowIndex,
                                                Integer maxRowsPerSheet, ExcelStreamRowHandler rowHandler) {
-        try (OPCPackage opcPackage = OPCPackage.open(filePath)) {
+        try (OPCPackage opcPackage = OPCPackage.open(new File(filePath), PackageAccess.READ)) {
             ReadOnlySharedStringsTable sharedStringsTable = new ReadOnlySharedStringsTable(opcPackage);
             XSSFReader reader = new XSSFReader(opcPackage);
             StylesTable stylesTable = reader.getStylesTable();
