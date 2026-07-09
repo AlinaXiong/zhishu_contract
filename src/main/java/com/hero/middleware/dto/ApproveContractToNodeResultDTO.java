@@ -34,9 +34,19 @@ public class ApproveContractToNodeResultDTO implements Serializable {
     }
 
     public void addFailure(String contractNumber, String reason) {
+        addFailure(contractNumber, reason, null);
+    }
+
+    public void addFailure(String contractNumber, String reason, String contractOwner) {
+        addFailure(contractNumber, reason, contractOwner, null);
+    }
+
+    public void addFailure(String contractNumber, String reason, String contractOwner, String zhishuContractType) {
         Failure failure = new Failure();
         failure.setContractNumber(contractNumber);
         failure.setReason(reason);
+        failure.setContractOwner(contractOwner);
+        failure.setZhishuContractType(zhishuContractType);
         failures.add(failure);
         refreshTotalCount();
     }
@@ -67,6 +77,10 @@ public class ApproveContractToNodeResultDTO implements Serializable {
         private static final long serialVersionUID = 1L;
 
         private String contractNumber;
+
+        private String contractOwner;
+
+        private String zhishuContractType;
 
         private String reason;
     }

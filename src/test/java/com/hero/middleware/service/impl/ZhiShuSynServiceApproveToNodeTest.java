@@ -98,6 +98,8 @@ class ZhiShuSynServiceApproveToNodeTest {
 
         assertEquals(Integer.valueOf(0), result.getSuccessCount());
         assertEquals(Integer.valueOf(1), result.getFailCount());
+        assertEquals("张三(owner-1)", result.getFailures().get(0).getContractOwner());
+        assertEquals("主播专项/主播经纪(009/009001)", result.getFailures().get(0).getZhishuContractType());
         String reason = result.getFailures().get(0).getReason();
         assertTrue(reason.contains("合同提交校验失败"));
         assertTrue(reason.contains("关联合同/关联合同为空"));
@@ -233,6 +235,12 @@ class ZhiShuSynServiceApproveToNodeTest {
         contract.setContractStatusCode(statusCode);
         contract.setContractStatusName(statusName);
         contract.setProcessInstanceId(processInstanceId);
+        contract.setOwnerUserName("张三");
+        contract.setOwnerUserId("owner-1");
+        contract.setParentContractCategoryName("主播专项");
+        contract.setParentContractCategoryNumber("009");
+        contract.setContractCategoryName("主播经纪");
+        contract.setContractCategoryNumber("009001");
         return contract;
     }
 

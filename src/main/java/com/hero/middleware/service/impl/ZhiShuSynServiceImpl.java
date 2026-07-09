@@ -591,12 +591,15 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
                     result.addSuccess(contractNumber, itemResult.getContractId(),
                             itemResult.getProcessInstanceId(), itemResult.getCurrentNodeName());
                 } else {
-                    result.addFailure(contractNumber, itemResult.getReason());
+                    result.addFailure(contractNumber, itemResult.getReason(), itemResult.getContractOwner(),
+                            itemResult.getZhishuContractType());
                 }
             } catch (Exception e) {
                 log.error("智书合同审核到指定节点异常，contractNumber={}，targetNodeName={}，error={}",
                         contractNumber, targetNodeName, e.getMessage(), e);
-                result.addFailure(contractNumber, "审核异常：" + e.getMessage());
+                ContractFailureContext failureContext = findContractFailureContextByNumberSafely(contractNumber);
+                result.addFailure(contractNumber, "审核异常：" + e.getMessage(),
+                        failureContext.getContractOwner(), failureContext.getZhishuContractType());
             }
         }
 
@@ -773,16 +776,20 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
         if (contract == null) {
             return ApproveToNodeItemResult.fail("未查询到合同编号对应的智书合同");
         }
+        String contractOwner = buildContractOwner(contract);
+        String zhishuContractType = buildZhishuContractType(contract);
 
         String contractId = contract.getContractId() == null ? null : String.valueOf(contract.getContractId());
         if (trimToNull(contractId) == null) {
-            return ApproveToNodeItemResult.fail("合同ID为空，无法提交或查询审批流程");
+            return ApproveToNodeItemResult.fail("合同ID为空，无法提交或查询审批流程",
+                    contractOwner, zhishuContractType);
         }
 
         String processInstanceId = trimToNull(contract.getProcessInstanceId());
         if (processInstanceId == null) {
             if (!isDraftContract(contract)) {
-                return ApproveToNodeItemResult.fail("合同非草稿且流程实例ID为空，无法自动审核");
+                return ApproveToNodeItemResult.fail("合同非草稿且流程实例ID为空，无法自动审核",
+                        contractOwner, zhishuContractType);
             }
             SubmitContractResponse submitResponse = zhishuContractClient.submitContract(contractId);
             log.info("提交智书草稿合同返回，contractNumber={}，contractId={}，response={}",
@@ -790,12 +797,14 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
             if (submitResponse == null || !submitResponse.isSuccess()
                     || submitResponse.getData() == null
                     || trimToNull(submitResponse.getData().getProcessInstanceId()) == null) {
-                return ApproveToNodeItemResult.fail(buildSubmitContractFailureReason(submitResponse));
+                return ApproveToNodeItemResult.fail(buildSubmitContractFailureReason(submitResponse),
+                        contractOwner, zhishuContractType);
             }
             processInstanceId = trimToNull(submitResponse.getData().getProcessInstanceId());
         }
 
-        return advanceApprovalToNode(contractNumber, contractId, processInstanceId, targetNodeName);
+        return advanceApprovalToNode(contractNumber, contractId, processInstanceId, targetNodeName,
+                contractOwner, zhishuContractType);
     }
 
     private String buildSubmitContractFailureReason(SubmitContractResponse response) {
@@ -810,7 +819,69 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
         if (response.isSuccess()) {
             return "提交合同失败：智书返回缺少流程实例ID，返回=" + JSON.toJSONString(response);
         }
-        return "提交合同失败：" + JSON.toJSONString(response);
+        return "提交合同失败：" + buildZhishuResponseSummary(response.getCode(), response.getMsg(), null,
+                response.getData(), JSON.toJSONString(response));
+    }
+
+    private String buildContractOwner(ContractQueryResponse contract) {
+        if (contract == null) {
+            return null;
+        }
+        String ownerName = trimToNull(contract.getOwnerUserName());
+        String ownerId = trimToNull(contract.getOwnerUserId());
+        if (ownerName == null) {
+            return ownerId;
+        }
+        if (ownerId == null) {
+            return ownerName;
+        }
+        return ownerName + "(" + ownerId + ")";
+    }
+
+    private String buildZhishuContractType(ContractQueryResponse contract) {
+        if (contract == null) {
+            return null;
+        }
+        String categoryName = joinNotBlank("/", contract.getParentContractCategoryName(),
+                contract.getContractCategoryName());
+        String categoryNumber = joinNotBlank("/", contract.getParentContractCategoryNumber(),
+                contract.getContractCategoryNumber());
+        if (categoryName != null && categoryNumber != null) {
+            return categoryName + "(" + categoryNumber + ")";
+        }
+        String categoryAbbreviation = joinNotBlank("/", contract.getParentContractCategoryAbbreviation(),
+                contract.getContractCategoryAbbreviation());
+        return firstNotBlank(categoryName, categoryNumber, categoryAbbreviation, contract.getContractCategoryId());
+    }
+
+    private ContractFailureContext findContractFailureContextByNumberSafely(String contractNumber) {
+        try {
+            ContractQueryResponse contract = findSingleContractByNumber(contractNumber);
+            return new ContractFailureContext(buildContractOwner(contract), buildZhishuContractType(contract));
+        } catch (Exception e) {
+            log.warn("查询智书合同失败，contractNumber={}，error={}", contractNumber, e.getMessage());
+            return new ContractFailureContext(null, null);
+        }
+    }
+
+    private String buildZhishuResponseSummary(Integer code,
+                                              String msg,
+                                              String message,
+                                              Object data,
+                                              String fallbackJson) {
+        List<String> parts = new ArrayList<>();
+        if (code != null) {
+            parts.add("code=" + code);
+        }
+        addLabelIfNotBlank(parts, "msg", msg);
+        addLabelIfNotBlank(parts, "message", message);
+        if (data != null) {
+            parts.add("data=" + JSON.toJSONString(data));
+        }
+        if (parts.isEmpty()) {
+            return firstNotBlank(fallbackJson, "智书返回异常但无错误详情");
+        }
+        return String.join("，", parts);
     }
 
     private String buildInvalidAttributeReason(SubmitContractResponse response) {
@@ -855,6 +926,29 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
         if (text != null) {
             values.add(text);
         }
+    }
+
+    private void addLabelIfNotBlank(List<String> values, String label, String value) {
+        String text = trimToNull(value);
+        if (text != null) {
+            values.add(label + "=" + text);
+        }
+    }
+
+    private String joinNotBlank(String delimiter, String... values) {
+        List<String> parts = new ArrayList<>();
+        if (values != null) {
+            for (String value : values) {
+                String text = trimToNull(value);
+                if (text != null) {
+                    parts.add(text);
+                }
+            }
+        }
+        if (parts.isEmpty()) {
+            return null;
+        }
+        return String.join(delimiter, parts);
     }
 
     private String formatInvalidAttributeReason(String reason) {
@@ -980,7 +1074,9 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
     private ApproveToNodeItemResult advanceApprovalToNode(String contractNumber,
                                                           String contractId,
                                                           String processInstanceId,
-                                                          String targetNodeName) {
+                                                          String targetNodeName,
+                                                          String contractOwner,
+                                                          String zhishuContractType) {
         int approvedSteps = 0;
         while (true) {
             ApprovalQueryResponse approvalQueryResponse = queryApproval(processInstanceId);
@@ -988,13 +1084,15 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
                     || approvalQueryResponse.getCode() != 0
                     || approvalQueryResponse.getData() == null
                     || approvalQueryResponse.getData().getProcessInstance() == null) {
-                return ApproveToNodeItemResult.fail("查询审批实例失败：" + JSON.toJSONString(approvalQueryResponse));
+                return ApproveToNodeItemResult.fail("查询审批实例失败：" + JSON.toJSONString(approvalQueryResponse),
+                        contractOwner, zhishuContractType);
             }
 
             ApprovalQueryResponse.TaskInstance currentTask = findCurrentTask(
                     approvalQueryResponse.getData().getProcessInstance().getTaskInstanceList());
             if (currentTask == null) {
-                return ApproveToNodeItemResult.fail("流程已结束或未找到当前待办节点，未到达目标节点：" + targetNodeName);
+                return ApproveToNodeItemResult.fail("流程已结束或未找到当前待办节点，未到达目标节点：" + targetNodeName,
+                        contractOwner, zhishuContractType);
             }
 
             String currentNodeName = getNodeName(currentTask.getNodeName());
@@ -1005,12 +1103,14 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
             }
 
             if (approvedSteps >= APPROVE_TO_NODE_MAX_STEPS) {
-                return ApproveToNodeItemResult.fail("超过最大自动审批节点数，当前节点：" + currentNodeName);
+                return ApproveToNodeItemResult.fail("超过最大自动审批节点数，当前节点：" + currentNodeName,
+                        contractOwner, zhishuContractType);
             }
 
             String assigneeId = firstAssigneeId(currentTask);
             if (assigneeId == null) {
-                return ApproveToNodeItemResult.fail("当前节点审批人为空，节点：" + currentNodeName);
+                return ApproveToNodeItemResult.fail("当前节点审批人为空，节点：" + currentNodeName,
+                        contractOwner, zhishuContractType);
             }
 
             ApprovalContractRequest approvalRequest = new ApprovalContractRequest();
@@ -1022,7 +1122,8 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
             log.info("智书合同自动审批节点返回，contractNumber={}，processInstanceId={}，nodeName={}，response={}",
                     contractNumber, processInstanceId, currentNodeName, JSON.toJSONString(approvalResponse));
             if (approvalResponse == null || approvalResponse.getCode() == null || approvalResponse.getCode() != 0) {
-                return ApproveToNodeItemResult.fail("审批当前节点失败：" + JSON.toJSONString(approvalResponse));
+                return ApproveToNodeItemResult.fail("审批当前节点失败：" + JSON.toJSONString(approvalResponse),
+                        contractOwner, zhishuContractType);
             }
             approvedSteps++;
         }
@@ -3596,14 +3697,33 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
                 zhishuContractClient.uploadContractFile(file, fileType, NEED_CONVERT_TO_PDF);
         if (uploadResponse == null || !uploadResponse.isSuccess() || uploadResponse.getData() == null
                 || trimToNull(uploadResponse.getData().getFileId()) == null) {
-            throw new RuntimeException("上传合同相关文件失败，filePath=" + file.getAbsolutePath()
-                    + "，返回=" + JSON.toJSONString(uploadResponse));
+            throw new RuntimeException(buildUploadContractFileFailureReason(file, fileType, uploadResponse));
         }
         String fileId = trimToNull(uploadResponse.getData().getFileId());
         context.putUploadedFileId(cacheKey, fileId);
         log.info("智书13Sheet历史合同上传文件完成，contract_number={}，fileType={}，filePath={}，fileId={}",
                 contractNumber, fileType, file.getAbsolutePath(), fileId);
         return fileId;
+    }
+
+    private String buildUploadContractFileFailureReason(File file,
+                                                        String fileType,
+                                                        UploadContractFileResponse response) {
+        List<String> details = new ArrayList<>();
+        details.add("filePath=" + (file == null ? "未知" : file.getAbsolutePath()));
+        if (file != null) {
+            details.add("fileName=" + file.getName());
+            details.add("fileSize=" + file.length());
+        }
+        addLabelIfNotBlank(details, "fileType", fileType);
+        details.add("needConvertToPdf=" + NEED_CONVERT_TO_PDF);
+        if (response == null) {
+            details.add("zhishuResponse=空");
+        } else {
+            details.add("zhishuResponse=" + buildZhishuResponseSummary(response.getCode(), response.getMsg(),
+                    response.getMessage(), response.getData(), JSON.toJSONString(response)));
+        }
+        return "上传合同相关文件失败，" + String.join("，", details);
     }
 
     private boolean uploadFallbackContractFiles(ContractGroup contractGroup,
@@ -6065,20 +6185,44 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
         }
     }
 
+    private static class ContractFailureContext {
+        private final String contractOwner;
+        private final String zhishuContractType;
+
+        private ContractFailureContext(String contractOwner, String zhishuContractType) {
+            this.contractOwner = contractOwner;
+            this.zhishuContractType = zhishuContractType;
+        }
+
+        private String getContractOwner() {
+            return contractOwner;
+        }
+
+        private String getZhishuContractType() {
+            return zhishuContractType;
+        }
+    }
+
     private static class ApproveToNodeItemResult {
         private final boolean success;
         private final String reason;
+        private final String contractOwner;
+        private final String zhishuContractType;
         private final String contractId;
         private final String processInstanceId;
         private final String currentNodeName;
 
         private ApproveToNodeItemResult(boolean success,
                                         String reason,
+                                        String contractOwner,
+                                        String zhishuContractType,
                                         String contractId,
                                         String processInstanceId,
                                         String currentNodeName) {
             this.success = success;
             this.reason = reason;
+            this.contractOwner = contractOwner;
+            this.zhishuContractType = zhishuContractType;
             this.contractId = contractId;
             this.processInstanceId = processInstanceId;
             this.currentNodeName = currentNodeName;
@@ -6087,11 +6231,19 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
         private static ApproveToNodeItemResult success(String contractId,
                                                        String processInstanceId,
                                                        String currentNodeName) {
-            return new ApproveToNodeItemResult(true, null, contractId, processInstanceId, currentNodeName);
+            return new ApproveToNodeItemResult(true, null, null, null, contractId, processInstanceId, currentNodeName);
         }
 
         private static ApproveToNodeItemResult fail(String reason) {
-            return new ApproveToNodeItemResult(false, reason, null, null, null);
+            return fail(reason, null, null);
+        }
+
+        private static ApproveToNodeItemResult fail(String reason, String contractOwner) {
+            return fail(reason, contractOwner, null);
+        }
+
+        private static ApproveToNodeItemResult fail(String reason, String contractOwner, String zhishuContractType) {
+            return new ApproveToNodeItemResult(false, reason, contractOwner, zhishuContractType, null, null, null);
         }
 
         private boolean isSuccess() {
@@ -6100,6 +6252,14 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
 
         private String getReason() {
             return reason;
+        }
+
+        private String getContractOwner() {
+            return contractOwner;
+        }
+
+        private String getZhishuContractType() {
+            return zhishuContractType;
         }
 
         private String getContractId() {
