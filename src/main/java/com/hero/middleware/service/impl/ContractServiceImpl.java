@@ -1800,7 +1800,7 @@ public class ContractServiceImpl implements ContractService {
         request.setEntityCodes(ourPartyCodes.toString());
         //对方信息
         List<ContractQueryResponse.CounterParty> counterPartyList = contractQueryInfo.getCounterPartyList();
-        StringBuilder counterPartyCodes = new StringBuilder();
+        String counterPartyCodes = null;
         VendorTypeEnum partnerDirection = getPartnerDirectionByPayType(payTypeCode);
         if (counterPartyList != null) {
             for (ContractQueryResponse.CounterParty counterParty : counterPartyList) {
@@ -1819,13 +1819,13 @@ public class ContractServiceImpl implements ContractService {
                             new Object[]{counterPartyId, counterPartyCode, vendorType, payTypeCode});
                     continue;
                 }
-                appendPartnerCode(counterPartyCodes, partnerValue.getPartnerCode());
+                counterPartyCodes = partnerValue.getPartnerCode();
                 if (trimToNull(partnerValue.getPartnerCategory()) != null) {
                     request.setPartnerCategory(partnerValue.getPartnerCategory());
                 }
             }
         }
-        request.setPartnerCode(counterPartyCodes.toString());
+        request.setPartnerCode(counterPartyCodes);
         request.setCompanyCode("HeroEsports");//公司-固定值HeroEsports
         request.setEmployeeCode(contractQueryInfo.getCreateUserId());
 //        request.setEmployeeCode("e8d58ag6");
@@ -2044,17 +2044,6 @@ public class ContractServiceImpl implements ContractService {
     private boolean containsVendorType(String vendorType, VendorTypeEnum direction) {
         String cleanVendorType = trimToNull(vendorType);
         return cleanVendorType != null && direction != null && cleanVendorType.contains(direction.getZhishuCode());
-    }
-
-    private void appendPartnerCode(StringBuilder builder, String partnerCode) {
-        String code = trimToNull(partnerCode);
-        if (code == null) {
-            return;
-        }
-        if (builder.length() > 0) {
-            builder.append(",");
-        }
-        builder.append(code);
     }
 
     private VendorInfoResponse getVendorInfo(String counterPartyId, Map<String, VendorInfoResponse> vendorInfoCache) {
