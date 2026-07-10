@@ -11,8 +11,6 @@ import com.hero.middleware.client.yuecai.response.AnchorCardResponse;
 import com.hero.middleware.client.yuecai.response.MasterDataRes;
 import com.hero.middleware.client.yuecai.response.OrderInfoResponse;
 import com.hero.middleware.client.yuecai.response.ProcurementResponse;
-import com.hero.middleware.client.yuecai.response.masterdata.CustomerRes;
-import com.hero.middleware.client.yuecai.response.masterdata.VenderRes;
 import com.hero.middleware.client.zhishu.ZhishuContractClient;
 import com.hero.middleware.client.zhishu.request.ContractsSearchRequest;
 import com.hero.middleware.client.zhishu.request.ContractsSearchRequest;
@@ -24,7 +22,6 @@ import com.hero.middleware.config.YuecaiApiConfig;
 import com.hero.middleware.dto.*;
 import com.hero.middleware.dto.ContractSyncDTO;
 import com.hero.middleware.enums.ContractStatusEnum;
-import com.hero.middleware.enums.MasterDataTypeEnum;
 import com.hero.middleware.enums.ZhishuAndYecaiFiledEnum;
 import com.hero.middleware.service.ContractService;
 import com.hero.middleware.service.ZhiShuSynService;
@@ -77,6 +74,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.times;
@@ -1151,25 +1149,23 @@ class ZhiShuSynServiceImplTest {
     }
 
     @Test
-    void syncHistoryContractsMapsRelatedCustomerCounterPartyCodeFromYecaiMasterData() throws Exception {
+    void syncHistoryContractsMultiThreadDoesNotLoadCounterPartyMapping() throws Exception {
         Path excelPath = writeThirteenSheetWorkbookWithGeneralCounterParty("C001");
         ZhiShuSynServiceImpl service = buildService(excelPath, 1);
-        mockSuccessClient();
-        mockCounterPartyMasterData("V001", "C001");
+        ZhishuContractClient mockZhishuContractClient = mock(ZhishuContractClient.class);
+        ReflectionTestUtils.setField(service, "zhishuContractClient", mockZhishuContractClient);
 
-        HistoryContractSyncResultDTO result = service.syncHistoryContracts(Collections.singleton("G-CHILD"));
+        HistoryContractSyncDTO request = new HistoryContractSyncDTO();
+        request.setContractNumbers(Arrays.asList("G-CHILD", "A-001"));
+        request.setFilePath(excelPath.toString());
+        request.setContractFileFallbackRoot(fallbackContractRoot().toString());
+        request.setThreadCount(2);
+        request.setBatchSize(1);
 
-        assertEquals(Integer.valueOf(2), result.getSuccessCount());
-        ArgumentCaptor<ZhishuCreateContractRequest> contractCaptor =
-                ArgumentCaptor.forClass(ZhishuCreateContractRequest.class);
-        verify(zhishuContractClient, times(2)).createContractV2(contractCaptor.capture());
-        verify(yuecaiContractClient, times(2)).getMasterData(any());
+        HistoryContractSyncResultDTO result = service.syncHistoryContractsMultiThread(request);
 
-        ZhishuCreateContractRequest childRequest = contractCaptor.getAllValues().get(1);
-        assertEquals(1, childRequest.getCounterPartyList().size());
-        assertEquals("V001;C001", childRequest.getCounterPartyList().get(0).getCounterPartyCode());
-        assertEquals("V001;C001",
-                childRequest.getPaymentPlanList().get(0).getPaymentCounterParty().getCounterPartyCode());
+        assertEquals(Integer.valueOf(3), result.getTotalCount());
+        verify(yuecaiContractClient, never()).getMasterData(any());
     }
 
     @Test
@@ -1613,26 +1609,6 @@ class ZhiShuSynServiceImplTest {
         FeishuUserBatchInfoResponse response = new FeishuUserBatchInfoResponse();
         response.setItems(Arrays.asList(users));
         when(feiShuApiClient.getUserInfoBatch(any())).thenReturn(response);
-    }
-
-    private void mockCounterPartyMasterData(String venderCode, String customerCode) {
-        when(yuecaiContractClient.getMasterData(any())).thenAnswer(invocation -> {
-            Map<?, ?> params = invocation.getArgument(0);
-            Object dataType = params.get("dataType");
-            if (MasterDataTypeEnum.VENDER.getCode().equals(dataType)) {
-                VenderRes venderRes = new VenderRes();
-                venderRes.setVenderCode(venderCode);
-                venderRes.setCustomerCode(customerCode);
-                return buildMasterDataListResponse(Collections.singletonList(venderRes));
-            }
-            if (MasterDataTypeEnum.CUSTOMER.getCode().equals(dataType)) {
-                CustomerRes customerRes = new CustomerRes();
-                customerRes.setCustomerCode(customerCode);
-                customerRes.setVenderCode(venderCode);
-                return buildMasterDataListResponse(Collections.singletonList(customerRes));
-            }
-            return buildEmptyMasterDataResponse();
-        });
     }
 
     private void mockAntiBriberySuccessClient() {

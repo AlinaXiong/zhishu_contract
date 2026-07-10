@@ -14,8 +14,6 @@ import com.hero.middleware.client.yuecai.response.AnchorCardResponse;
 import com.hero.middleware.client.yuecai.response.MasterDataRes;
 import com.hero.middleware.client.yuecai.response.OrderInfoResponse;
 import com.hero.middleware.client.yuecai.response.ProcurementResponse;
-import com.hero.middleware.client.yuecai.response.masterdata.CustomerRes;
-import com.hero.middleware.client.yuecai.response.masterdata.VenderRes;
 import com.hero.middleware.client.zhishu.ZhishuContractClient;
 import com.hero.middleware.client.zhishu.request.ApprovalContractRequest;
 import com.hero.middleware.client.zhishu.request.ContractFormCreatResponse;
@@ -48,7 +46,6 @@ import com.hero.middleware.enums.BankChargePayerEnum;
 import com.hero.middleware.enums.ContractCategoryMappingEnum;
 import com.hero.middleware.enums.FormAttributeTypeEnum;
 import com.hero.middleware.enums.InvoiceTypeEnum;
-import com.hero.middleware.enums.MasterDataTypeEnum;
 import com.hero.middleware.enums.PlatformEnum;
 import com.hero.middleware.enums.PrintModeEnum;
 import com.hero.middleware.enums.TaxItemEnum;
@@ -125,6 +122,7 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
     private static final int DEFAULT_BATCH_SIZE = 200;
     private static final int DEFAULT_MULTI_THREAD_COUNT = 5;
     private static final int DEFAULT_MULTI_THREAD_BATCH_SIZE = 10;
+    private static final int DEFAULT_APPROVE_TO_NODE_THREAD_COUNT = 6;
     private static final String DEFAULT_HISTORY_CONTRACT_STATUS_CODE = "9";
     private static final String YECAI_SYNC_SUCCESS = "成功";
     private static final String YECAI_SYNC_FAIL = "失败";
@@ -170,7 +168,6 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
     private static final String FIELD_CONTRACT_TEXT = "contract_files.contract_text";
     private static final String FIELD_CONTRACT_CAUSES = "contract_files.contract_causes";
     private static final String FIELD_CONTRACT_ATTACHMENTS = "contract_files.contract_attachments";
-    private static final String FIELD_SIGN_TYPE_CODE_SEAL_PARTY = "sign_type_code#seal_party";
     private static final String FIELD_SIGN_TYPE_CODE_SIGN_FORM = "sign_type_code#sign_form";
     private static final String DOCUMENT_LIST_URL = "/exp/requisition/list";
     private static final String ORDER_INFO_URL = "/project/order-query/list";
@@ -246,7 +243,6 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
 
         log.info("智书13Sheet历史合同同步开始，excelPath={}，过滤合同编码={}", excelPath, contractNumberFilter);
         try {
-            context.setCounterPartyCodeLookup(loadCounterPartyCodeLookup());
             contractIndex = scanContractIndex(excelPath);
             Set<String> initialTargetKeys = resolveTargetGroupKeys(contractNumberFilter, contractIndex, context);
             Set<String> expandedTargetKeys = expandRelationDependencies(initialTargetKeys, contractIndex);
@@ -585,26 +581,16 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
         }
 
         for (String contractNumber : contractNumbers) {
-            try {
-                ApproveToNodeItemResult itemResult = approveOneContractToNode(contractNumber, targetNodeName);
-                if (itemResult.isSuccess()) {
-                    result.addSuccess(contractNumber, itemResult.getContractId(),
-                            itemResult.getProcessInstanceId(), itemResult.getCurrentNodeName());
-                } else {
-                    result.addFailure(contractNumber, itemResult.getReason(), itemResult.getContractOwner(),
-                            itemResult.getZhishuContractType());
-                }
-            } catch (Exception e) {
-                log.error("智书合同审核到指定节点异常，contractNumber={}，targetNodeName={}，error={}",
-                        contractNumber, targetNodeName, e.getMessage(), e);
-                ContractFailureContext failureContext = findContractFailureContextByNumberSafely(contractNumber);
-                result.addFailure(contractNumber, "审核异常：" + e.getMessage(),
-                        failureContext.getContractOwner(), failureContext.getZhishuContractType());
-            }
+            appendApproveToNodeItemResult(result, contractNumber,
+                    approveOneContractToNodeSafely(contractNumber, targetNodeName));
         }
 
         finishApproveToNodeResult(result, startTime);
-        log.info("智书合同审核到指定节点结束，result={}", JSON.toJSONString(result));
+        log.info("智书合同审核到指定节点结束，totalCount={}，successCount={}，failCount={}，elapsedMillis={}",
+                result.getTotalCount(), result.getSuccessCount(), result.getFailCount(), result.getElapsedMillis());
+        if (log.isDebugEnabled()) {
+            log.debug("智书合同审核到指定节点明细，result={}", JSON.toJSONString(result));
+        }
         return result;
     }
 
@@ -622,19 +608,147 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
         if (contractNumbersByNodeName == null || contractNumbersByNodeName.isEmpty()) {
             return resultMap;
         }
+
+        List<ApproveToNodeGroup> groups = new ArrayList<>();
+        Map<String, List<ApproveToNodeTask>> tasksByContractNumber = new LinkedHashMap<>();
         for (Map.Entry<String, List<String>> entry : contractNumbersByNodeName.entrySet()) {
             String nodeName = trimToNull(entry.getKey());
             String resultKey = nodeName == null ? String.valueOf(entry.getKey()) : nodeName;
-            List<String> contractNumbers = entry.getValue();
-            try {
-                resultMap.put(resultKey, approveContractsToNode(contractNumbers, nodeName));
-            } catch (Exception e) {
-                log.error("智书合同按节点分组审核异常，nodeName={}，contractNumbers={}，error={}",
-                        nodeName, contractNumbers, e.getMessage(), e);
-                resultMap.put(resultKey, buildApproveToNodeFailureResult(contractNumbers, "审核异常：" + e.getMessage()));
+            ApproveToNodeGroup group = new ApproveToNodeGroup(resultKey);
+            groups.add(group);
+
+            Set<String> contractNumbers = normalizeContractNumbers(entry.getValue());
+            if (contractNumbers.isEmpty()) {
+                group.getResult().addFailure("ALL", "合同编号集合不能为空");
+                continue;
+            }
+            if (nodeName == null) {
+                for (String contractNumber : contractNumbers) {
+                    group.getResult().addFailure(contractNumber, "目标节点名称不能为空");
+                }
+                continue;
+            }
+            for (String contractNumber : contractNumbers) {
+                ApproveToNodeTask task = new ApproveToNodeTask(contractNumber, nodeName);
+                group.addTask(task);
+                tasksByContractNumber.computeIfAbsent(contractNumber, key -> new ArrayList<>()).add(task);
             }
         }
+
+        if (!tasksByContractNumber.isEmpty()) {
+            int threadCount = Math.min(DEFAULT_APPROVE_TO_NODE_THREAD_COUNT, tasksByContractNumber.size());
+            log.info("智书合同按节点分组审核开始，节点组数={}，合同任务数={}，唯一合同数={}，线程数={}",
+                    groups.size(), countApproveToNodeTasks(groups), tasksByContractNumber.size(), threadCount);
+
+            ExecutorService executorService = Executors.newFixedThreadPool(threadCount);
+            List<ApproveToNodeTaskBatch> taskBatches = new ArrayList<>();
+            List<Future<List<ApproveToNodeTaskResult>>> futures = new ArrayList<>();
+            Map<ApproveToNodeTask, ApproveToNodeItemResult> itemResults = new LinkedHashMap<>();
+            try {
+                for (List<ApproveToNodeTask> tasks : tasksByContractNumber.values()) {
+                    ApproveToNodeTaskBatch taskBatch = new ApproveToNodeTaskBatch(tasks);
+                    taskBatches.add(taskBatch);
+                    futures.add(executorService.submit(
+                            ApiLogTableContext.wrap(() -> approveToNodeTasks(taskBatch.getTasks()))));
+                }
+                for (int index = 0; index < futures.size(); index++) {
+                    ApproveToNodeTaskBatch taskBatch = taskBatches.get(index);
+                    try {
+                        for (ApproveToNodeTaskResult taskResult : futures.get(index).get()) {
+                            itemResults.put(taskResult.getTask(), taskResult.getItemResult());
+                        }
+                    } catch (Exception e) {
+                        String reason = "审核异常：" + buildExceptionMessage(e);
+                        log.error("智书合同按节点分组审核任务异常，contractNumber={}，error={}",
+                                taskBatch.getContractNumber(), reason, e);
+                        for (ApproveToNodeTask task : taskBatch.getTasks()) {
+                            itemResults.put(task, ApproveToNodeItemResult.fail(reason));
+                        }
+                    }
+                }
+            } finally {
+                executorService.shutdown();
+                try {
+                    if (!executorService.awaitTermination(10, TimeUnit.MINUTES)) {
+                        executorService.shutdownNow();
+                    }
+                } catch (InterruptedException e) {
+                    executorService.shutdownNow();
+                    Thread.currentThread().interrupt();
+                    log.warn("智书合同按节点分组审核等待线程池结束被中断，error={}", e.getMessage(), e);
+                }
+            }
+
+            for (ApproveToNodeGroup group : groups) {
+                for (ApproveToNodeTask task : group.getTasks()) {
+                    ApproveToNodeItemResult itemResult = itemResults.get(task);
+                    if (itemResult == null) {
+                        itemResult = ApproveToNodeItemResult.fail("审核任务未返回结果");
+                    }
+                    appendApproveToNodeItemResult(group.getResult(), task.getContractNumber(), itemResult);
+                }
+            }
+        }
+
+        for (ApproveToNodeGroup group : groups) {
+            finishApproveToNodeResult(group.getResult(), group.getStartTime());
+            resultMap.put(group.getResultKey(), group.getResult());
+        }
+        int totalCount = 0;
+        int successCount = 0;
+        int failCount = 0;
+        for (ApproveContractToNodeResultDTO groupResult : resultMap.values()) {
+            totalCount += groupResult.getTotalCount();
+            successCount += groupResult.getSuccessCount();
+            failCount += groupResult.getFailCount();
+        }
+        log.info("智书合同按节点分组审核结束，节点组数={}，totalCount={}，successCount={}，failCount={}",
+                resultMap.size(), totalCount, successCount, failCount);
+        if (log.isDebugEnabled()) {
+            log.debug("智书合同按节点分组审核明细，result={}", JSON.toJSONString(resultMap));
+        }
         return resultMap;
+    }
+
+    private int countApproveToNodeTasks(List<ApproveToNodeGroup> groups) {
+        int count = 0;
+        for (ApproveToNodeGroup group : groups) {
+            count += group.getTasks().size();
+        }
+        return count;
+    }
+
+    private List<ApproveToNodeTaskResult> approveToNodeTasks(List<ApproveToNodeTask> tasks) {
+        List<ApproveToNodeTaskResult> taskResults = new ArrayList<>();
+        for (ApproveToNodeTask task : tasks) {
+            taskResults.add(new ApproveToNodeTaskResult(task,
+                    approveOneContractToNodeSafely(task.getContractNumber(), task.getTargetNodeName())));
+        }
+        return taskResults;
+    }
+
+    private ApproveToNodeItemResult approveOneContractToNodeSafely(String contractNumber, String targetNodeName) {
+        try {
+            return approveOneContractToNode(contractNumber, targetNodeName);
+        } catch (Exception e) {
+            log.error("智书合同审核到指定节点异常，contractNumber={}，targetNodeName={}，error={}",
+                    contractNumber, targetNodeName, e.getMessage(), e);
+            ContractFailureContext failureContext = findContractFailureContextByNumberSafely(contractNumber);
+            return ApproveToNodeItemResult.fail("审核异常：" + buildExceptionMessage(e),
+                    failureContext.getContractOwner(), failureContext.getZhishuContractType());
+        }
+    }
+
+    private void appendApproveToNodeItemResult(ApproveContractToNodeResultDTO result,
+                                                String contractNumber,
+                                                ApproveToNodeItemResult itemResult) {
+        if (itemResult.isSuccess()) {
+            result.addSuccess(contractNumber, itemResult.getContractId(),
+                    itemResult.getProcessInstanceId(), itemResult.getCurrentNodeName());
+            return;
+        }
+        result.addFailure(contractNumber, itemResult.getReason(), itemResult.getContractOwner(),
+                itemResult.getZhishuContractType());
     }
 
     private ApproveContractToNodeResultDTO buildApproveToNodeFailureResult(Collection<String> contractNumbers, String reason) {
@@ -792,8 +906,10 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
                         contractOwner, zhishuContractType);
             }
             SubmitContractResponse submitResponse = zhishuContractClient.submitContract(contractId);
-            log.info("提交智书草稿合同返回，contractNumber={}，contractId={}，response={}",
-                    contractNumber, contractId, JSON.toJSONString(submitResponse));
+            log.debug("提交智书草稿合同返回，contractNumber={}，contractId={}，code={}，processInstanceId={}",
+                    contractNumber, contractId, submitResponse == null ? null : submitResponse.getCode(),
+                    submitResponse == null || submitResponse.getData() == null
+                            ? null : submitResponse.getData().getProcessInstanceId());
             if (submitResponse == null || !submitResponse.isSuccess()
                     || submitResponse.getData() == null
                     || trimToNull(submitResponse.getData().getProcessInstanceId()) == null) {
@@ -964,8 +1080,10 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
 
     private ContractQueryResponse findSingleContractByNumber(String contractNumber) {
         ContractsSearchResponse searchResponse = searchContractsByNumber(contractNumber);
-        log.info("按合同编号查询智书合同返回，contractNumber={}，response={}",
-                contractNumber, JSON.toJSONString(searchResponse));
+        if (log.isDebugEnabled()) {
+            log.debug("按合同编号查询智书合同返回，contractNumber={}，response={}",
+                    contractNumber, JSON.toJSONString(searchResponse));
+        }
         if (searchResponse == null || !searchResponse.isSuccess()
                 || searchResponse.getData() == null
                 || searchResponse.getData().getItems() == null) {
@@ -990,8 +1108,10 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
     private ContractExistsCheckResult checkContractExistsByNumber(String contractNumber) {
         try {
             ContractsSearchResponse searchResponse = searchContractsByNumber(contractNumber);
-            log.info("按合同编号检查智书合同是否存在返回，contractNumber={}，response={}",
-                    contractNumber, JSON.toJSONString(searchResponse));
+            if (log.isDebugEnabled()) {
+                log.debug("按合同编号检查智书合同是否存在返回，contractNumber={}，response={}",
+                        contractNumber, JSON.toJSONString(searchResponse));
+            }
             if (searchResponse == null) {
                 return ContractExistsCheckResult.notFound("查询接口返回为空");
             }
@@ -1096,7 +1216,7 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
             }
 
             String currentNodeName = getNodeName(currentTask.getNodeName());
-            log.info("智书合同审核到指定节点当前任务，contractNumber={}，processInstanceId={}，nodeName={}，approvedSteps={}",
+            log.debug("智书合同审核到指定节点当前任务，contractNumber={}，processInstanceId={}，nodeName={}，approvedSteps={}",
                     contractNumber, processInstanceId, currentNodeName, approvedSteps);
             if (targetNodeName.equals(currentNodeName)) {
                 return ApproveToNodeItemResult.success(contractId, processInstanceId, currentNodeName);
@@ -1119,8 +1239,9 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
             approvalRequest.setCommandType(APPROVE_COMMAND_TYPE);
             approvalRequest.setTaskComment(APPROVE_TO_NODE_COMMENT);
             ApprovalResponse approvalResponse = zhishuContractClient.approvalContract(approvalRequest, processInstanceId);
-            log.info("智书合同自动审批节点返回，contractNumber={}，processInstanceId={}，nodeName={}，response={}",
-                    contractNumber, processInstanceId, currentNodeName, JSON.toJSONString(approvalResponse));
+            log.debug("智书合同自动审批节点返回，contractNumber={}，processInstanceId={}，nodeName={}，code={}",
+                    contractNumber, processInstanceId, currentNodeName,
+                    approvalResponse == null ? null : approvalResponse.getCode());
             if (approvalResponse == null || approvalResponse.getCode() == null || approvalResponse.getCode() != 0) {
                 return ApproveToNodeItemResult.fail("审批当前节点失败：" + JSON.toJSONString(approvalResponse),
                         contractOwner, zhishuContractType);
@@ -1175,7 +1296,6 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
         log.info("智书反商业贿赂协议历史合同同步开始，excelPath={}，过滤合同编码={}",
                 excelPath, contractNumberFilter);
         try {
-            uploadContext.setCounterPartyCodeLookup(loadCounterPartyCodeLookup());
             List<Map<String, Object>> rows = readAntiBriberySheetRows(excelPath, ANTI_BRIBERY_DATA_SHEET_INDEX);
             log.info("智书反商业贿赂协议历史合同Excel加载完成，rowCount={}", rows.size());
             for (Map<String, Object> row : rows) {
@@ -1287,7 +1407,7 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
     private List<ZhishuCreateContractRequest.CounterPartyInfo> buildAntiBriberyCounterPartyList(Object value,
                                                                                                 SyncContext context) {
         List<ZhishuCreateContractRequest.CounterPartyInfo> result = new ArrayList<>();
-        for (String partyCode : resolveCounterPartyCodes(splitMultiValue(value), context)) {
+        for (String partyCode : resolveCounterPartyCodes(splitCounterPartyCodes(value))) {
             ZhishuCreateContractRequest.CounterPartyInfo counterPartyInfo =
                     new ZhishuCreateContractRequest.CounterPartyInfo();
             counterPartyInfo.setCounterPartyCode(partyCode);
@@ -1763,7 +1883,6 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
             Set<String> contractNumberFilter = resolveContractNumberFilter(actualRequest);
             String excelPath = resolveExcelPath(actualRequest.getResolvedFilePath());
             SyncContext context = buildSyncContext(actualRequest);
-            context.setCounterPartyCodeLookup(loadCounterPartyCodeLookup());
             ContractIndex contractIndex = scanContractIndex(excelPath);
             Set<String> initialTargetKeys = resolveTargetGroupKeys(contractNumberFilter, contractIndex, context);
             copyHistorySyncFailures(result, context.getResult());
@@ -2247,13 +2366,19 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
             request.setSignTypeCode(signTypeCode);
         }
 
-        Object sealPartyValue = getFirstNonBlankValue(contractGroup, FIELD_SIGN_TYPE_CODE_SEAL_PARTY);
-        Integer signPartyNo = parseSignPartyNo(toStringValue(sealPartyValue));
-        if (signPartyNo == null || request.getCounterPartyList() == null) {
-            return;
+        applyUnrestrictedSignPartyNo(request);
+    }
+
+    private void applyUnrestrictedSignPartyNo(ZhishuCreateContractRequest request) {
+        if (request.getOurPartyList() != null) {
+            for (ZhishuCreateContractRequest.OurPartyInfo ourPartyInfo : request.getOurPartyList()) {
+                ourPartyInfo.setSignPartyNo(0);
+            }
         }
-        for (ZhishuCreateContractRequest.CounterPartyInfo counterPartyInfo : request.getCounterPartyList()) {
-            counterPartyInfo.setSignPartyNo(signPartyNo);
+        if (request.getCounterPartyList() != null) {
+            for (ZhishuCreateContractRequest.CounterPartyInfo counterPartyInfo : request.getCounterPartyList()) {
+                counterPartyInfo.setSignPartyNo(0);
+            }
         }
     }
 
@@ -3013,93 +3138,6 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
         return params;
     }
 
-    private CounterPartyCodeLookup loadCounterPartyCodeLookup() {
-        CounterPartyCodeLookup lookup = new CounterPartyCodeLookup();
-        try {
-            int vendorCount = loadVendorCounterPartyMappings(lookup);
-            int customerCount = loadCustomerCounterPartyMappings(lookup);
-            log.info("业财交易方编码映射加载完成，供应商数量：{}，客户数量：{}，映射数量：{}",
-                    vendorCount, customerCount, lookup.size());
-        } catch (Exception e) {
-            log.error("业财交易方编码映射加载失败，本次历史合同同步将使用原始对方编码，错误：{}", e.getMessage(), e);
-        }
-        return lookup;
-    }
-
-    private int loadVendorCounterPartyMappings(CounterPartyCodeLookup lookup) {
-        int count = 0;
-        for (Object content : loadYecaiMasterDataContent(MasterDataTypeEnum.VENDER.getCode())) {
-            if (content == null) {
-                continue;
-            }
-            VenderRes venderRes = JSONObject.parseObject(JSON.toJSONString(content), VenderRes.class);
-            if (venderRes == null) {
-                continue;
-            }
-            lookup.addVendor(venderRes);
-            count++;
-        }
-        return count;
-    }
-
-    private int loadCustomerCounterPartyMappings(CounterPartyCodeLookup lookup) {
-        int count = 0;
-        for (Object content : loadYecaiMasterDataContent(MasterDataTypeEnum.CUSTOMER.getCode())) {
-            if (content == null) {
-                continue;
-            }
-            CustomerRes customerRes = JSONObject.parseObject(JSON.toJSONString(content), CustomerRes.class);
-            if (customerRes == null) {
-                continue;
-            }
-            lookup.addCustomer(customerRes);
-            count++;
-        }
-        return count;
-    }
-
-    private List<Object> loadYecaiMasterDataContent(String businessType) {
-        List<Object> result = new ArrayList<>();
-        if (yuecaiContractClient == null) {
-            log.warn("业财客户端为空，无法加载主数据，类型：{}", businessType);
-            return result;
-        }
-        int page = 0;
-        boolean nextPage = true;
-        while (nextPage) {
-            Map<String, Object> params = new LinkedHashMap<>();
-            params.put("page", page);
-            params.put("size", resolveYecaiMasterDataPageSize());
-            params.put("dataType", businessType);
-            String startTime = yeCaiDataConfig == null ? null : trimToNull(yeCaiDataConfig.getStartTime());
-            if (startTime != null) {
-                params.put("startTime", URLUtil.encode(startTime));
-            }
-            MasterDataRes masterDataRes = yuecaiContractClient.getMasterData(params);
-            if (masterDataRes == null) {
-                break;
-            }
-            if (masterDataRes.getContent() != null) {
-                result.addAll(masterDataRes.getContent());
-            }
-            int totalPages = masterDataRes.getTotalPages() - 1;
-            if (totalPages > page) {
-                page++;
-            } else {
-                nextPage = false;
-            }
-        }
-        log.info("业财主数据加载完成，类型：{}，数量：{}", businessType, result.size());
-        return result;
-    }
-
-    private int resolveYecaiMasterDataPageSize() {
-        if (yeCaiDataConfig != null && yeCaiDataConfig.getPageSize() > 0) {
-            return yeCaiDataConfig.getPageSize();
-        }
-        return 500;
-    }
-
     private <T> T parseFirstPrecedingDocument(MasterDataRes masterDataRes,
                                                Class<T> responseType,
                                               String documentType,
@@ -3346,16 +3384,22 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
     private List<ZhishuCreateContractRequest.CounterPartyInfo> buildCounterPartyList(ContractGroup contractGroup,
                                                                                      SyncContext context) {
         List<ZhishuCreateContractRequest.CounterPartyInfo> result = new ArrayList<>();
-        Set<String> partyCodes = collectSplitValues(contractGroup, contractGroup.getFlowType().getCounterPartyRole(),
+        Set<String> partyCodes = collectCounterPartyCodes(contractGroup, contractGroup.getFlowType().getCounterPartyRole(),
                 FIELD_COUNTER_PARTY_CODE);
-        for (String partyCode : resolveCounterPartyCodes(partyCodes, context)) {
+        for (String partyCode : resolveCounterPartyCodes(partyCodes)) {
             ZhishuCreateContractRequest.CounterPartyInfo counterPartyInfo =
                     new ZhishuCreateContractRequest.CounterPartyInfo();
             counterPartyInfo.setCounterPartyCode(partyCode);
-            counterPartyInfo.setCounterPartySignInfoResource(buildDisabledSignInfoResource());
+            counterPartyInfo.setCounterPartySignInfoResource(buildEnabledCounterPartySignInfoResource());
             result.add(counterPartyInfo);
         }
         return result;
+    }
+
+    private ZhishuCreateContractRequest.SignInfoResource buildEnabledCounterPartySignInfoResource() {
+        ZhishuCreateContractRequest.SignInfoResource signInfoResource = buildDisabledSignInfoResource();
+        signInfoResource.setEnable(true);
+        return signInfoResource;
     }
 
     private ZhishuCreateContractRequest.SignInfoResource buildDisabledSignInfoResource() {
@@ -3471,12 +3515,12 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
     }
 
     private List<ZhishuCreateContractRequest.CounterPartyRef> buildCounterPartyRefs(Object value, SyncContext context) {
-        Set<String> partyCodes = splitMultiValue(value);
+        Set<String> partyCodes = splitCounterPartyCodes(value);
         if (partyCodes.isEmpty()) {
             return Collections.emptyList();
         }
         List<ZhishuCreateContractRequest.CounterPartyRef> refs = new ArrayList<>();
-        for (String partyCode : resolveCounterPartyCodes(partyCodes, context)) {
+        for (String partyCode : resolveCounterPartyCodes(partyCodes)) {
             ZhishuCreateContractRequest.CounterPartyRef ref = new ZhishuCreateContractRequest.CounterPartyRef();
             ref.setCounterPartyCode(partyCode);
             refs.add(ref);
@@ -3484,41 +3528,18 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
         return refs;
     }
 
-    private Set<String> resolveCounterPartyCodes(Set<String> partyCodes, SyncContext context) {
+    private Set<String> resolveCounterPartyCodes(Set<String> partyCodes) {
         Set<String> result = new LinkedHashSet<>();
         if (partyCodes == null || partyCodes.isEmpty()) {
             return result;
         }
-        CounterPartyCodeLookup lookup = context == null ? null : context.getCounterPartyCodeLookup();
         for (String partyCode : partyCodes) {
-            String resolvedCode = lookup == null ? trimToNull(partyCode) : lookup.resolve(partyCode);
-            if (resolvedCode != null) {
-                result.add(resolvedCode);
+            String originalCode = trimToNull(partyCode);
+            if (originalCode != null) {
+                result.add(originalCode);
             }
         }
-        removeCounterPartyCodePartsCoveredByCombinedCode(result);
         return result;
-    }
-
-    private void removeCounterPartyCodePartsCoveredByCombinedCode(Set<String> partyCodes) {
-        if (partyCodes == null || partyCodes.size() <= 1) {
-            return;
-        }
-        Set<String> coveredParts = new LinkedHashSet<>();
-        for (String partyCode : partyCodes) {
-            if (partyCode == null || !partyCode.contains(";")) {
-                continue;
-            }
-            for (String part : partyCode.split(";")) {
-                String item = trimToNull(part);
-                if (item != null) {
-                    coveredParts.add(item);
-                }
-            }
-        }
-        if (!coveredParts.isEmpty()) {
-            partyCodes.removeAll(coveredParts);
-        }
     }
 
     private boolean isPaymentPlanEmpty(ZhishuCreateContractRequest.PaymentPlanInfo paymentPlan) {
@@ -3909,6 +3930,19 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
         return values;
     }
 
+    /**
+     * A semicolon joins the supplier and customer codes for Zhishu, so it must be retained.
+     */
+    private Set<String> collectCounterPartyCodes(ContractGroup contractGroup, SheetRole sheetRole, String header) {
+        Set<String> values = new LinkedHashSet<>();
+        for (ExcelUtils.ExcelRowData row : contractGroup.getRowsByRole(sheetRole)) {
+            for (Object value : row.getValues(header)) {
+                values.addAll(splitCounterPartyCodes(value));
+            }
+        }
+        return values;
+    }
+
     private Set<String> collectSplitValues(ContractGroup contractGroup, String header) {
         Set<String> values = new LinkedHashSet<>();
         for (ExcelUtils.ExcelRowData row : contractGroup.getRows()) {
@@ -3957,6 +3991,22 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
             return result;
         }
         String[] parts = text.split("[,，;；、\\r\\n]+");
+        for (String part : parts) {
+            String item = trimToNull(part);
+            if (item != null) {
+                result.add(item);
+            }
+        }
+        return result;
+    }
+
+    private Set<String> splitCounterPartyCodes(Object value) {
+        Set<String> result = new LinkedHashSet<>();
+        String text = trimToNull(toStringValue(value));
+        if (text == null) {
+            return result;
+        }
+        String[] parts = text.split("[,\\uFF0C\\u3001\\r\\n]+");
         for (String part : parts) {
             String item = trimToNull(part);
             if (item != null) {
@@ -4650,27 +4700,6 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
             return 2;
         }
         if (text.contains("电子") || text.contains("线上")) {
-            return 2;
-        }
-        return null;
-    }
-
-    private Integer parseSignPartyNo(String text) {
-        text = trimToNull(text);
-        if (text == null) {
-            return null;
-        }
-        BigDecimal decimal = toBigDecimal(text);
-        if (decimal != null) {
-            return decimal.intValue();
-        }
-        if (text.contains("不限制") || text.contains("不限")) {
-            return 0;
-        }
-        if (text.contains("我方")) {
-            return 1;
-        }
-        if (text.contains("对方")) {
             return 2;
         }
         return null;
@@ -5412,77 +5441,6 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
         }
     }
 
-    private static class CounterPartyCodeLookup {
-        private final Map<String, String> codeMapping = new LinkedHashMap<>();
-
-        private void addVendor(VenderRes venderRes) {
-            if (venderRes == null) {
-                return;
-            }
-            String venderCode = trimStatic(venderRes.getVenderCode());
-            if (venderCode == null) {
-                return;
-            }
-//            if("V-C-CN-SP-TPS-0012".equals(venderCode)){
-//                System.out.println(venderRes.getCustomerCode());
-//            }
-            String customerCode = trimStatic(venderRes.getCustomerCode());
-            String targetCode = customerCode == null ? venderCode : venderCode + ";" + customerCode;
-            putMapping(venderCode, targetCode, "供应商");
-        }
-
-        private void addCustomer(CustomerRes customerRes) {
-            if (customerRes == null) {
-                return;
-            }
-            String customerCode = trimStatic(customerRes.getCustomerCode());
-            if (customerCode == null) {
-                return;
-            }
-            String venderCode = trimStatic(customerRes.getVenderCode());
-            String targetCode = venderCode == null ? customerCode : venderCode + ";" + customerCode;
-            putMapping(customerCode, targetCode, "客户");
-        }
-
-        private String resolve(String sourceCode) {
-            String normalizedCode = trimStatic(sourceCode);
-            if (normalizedCode == null) {
-                return null;
-            }
-            String targetCode = codeMapping.get(normalizedCode);
-            return targetCode == null ? normalizedCode : targetCode;
-        }
-
-        private int size() {
-            return codeMapping.size();
-        }
-
-        private void putMapping(String sourceCode, String targetCode, String dataType) {
-            String normalizedSourceCode = trimStatic(sourceCode);
-            String normalizedTargetCode = trimStatic(targetCode);
-            if (normalizedSourceCode == null || normalizedTargetCode == null) {
-                return;
-            }
-            String oldTargetCode = codeMapping.get(normalizedSourceCode);
-            if (oldTargetCode == null) {
-                codeMapping.put(normalizedSourceCode, normalizedTargetCode);
-                return;
-            }
-            if (!oldTargetCode.equals(normalizedTargetCode)) {
-                log.warn("业财交易方编码存在多条不同映射，编码：{}，保留映射：{}，忽略映射：{}，来源类型：{}",
-                        normalizedSourceCode, oldTargetCode, normalizedTargetCode, dataType);
-            }
-        }
-
-        private static String trimStatic(String value) {
-            if (value == null) {
-                return null;
-            }
-            String result = value.trim();
-            return result.isEmpty() ? null : result;
-        }
-    }
-
     private static class SyncContext {
         private final HistoryContractSyncResultDTO result = new HistoryContractSyncResultDTO();
         private final Set<String> targetKeys = new LinkedHashSet<>();
@@ -5491,7 +5449,6 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
         private final Map<String, String> failureReasonsByKey = new LinkedHashMap<>();
         private final Map<String, String> uploadedFileIdsByKey = new LinkedHashMap<>();
         private final Map<String, String> contractCategoryAbbreviationsByValue = new LinkedHashMap<>();
-        private CounterPartyCodeLookup counterPartyCodeLookup = new CounterPartyCodeLookup();
         private List<ContractCategoryNode> contractCategoryNodes;
         private Map<String, ContractGroup> contractGroupMap = Collections.emptyMap();
         private Map<String, List<ContractGroup>> groupsByContractNumber = Collections.emptyMap();
@@ -5516,15 +5473,6 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
 
         private Map<String, List<ContractGroup>> getGroupsByContractNumber() {
             return groupsByContractNumber;
-        }
-
-        private CounterPartyCodeLookup getCounterPartyCodeLookup() {
-            return counterPartyCodeLookup;
-        }
-
-        private void setCounterPartyCodeLookup(CounterPartyCodeLookup counterPartyCodeLookup) {
-            this.counterPartyCodeLookup = counterPartyCodeLookup == null
-                    ? new CounterPartyCodeLookup() : counterPartyCodeLookup;
         }
 
         private Path getContractFileFallbackRoot() {
@@ -6200,6 +6148,89 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
 
         private String getZhishuContractType() {
             return zhishuContractType;
+        }
+    }
+
+    private static class ApproveToNodeGroup {
+        private final String resultKey;
+        private final long startTime = System.currentTimeMillis();
+        private final ApproveContractToNodeResultDTO result = new ApproveContractToNodeResultDTO();
+        private final List<ApproveToNodeTask> tasks = new ArrayList<>();
+
+        private ApproveToNodeGroup(String resultKey) {
+            this.resultKey = resultKey;
+        }
+
+        private void addTask(ApproveToNodeTask task) {
+            tasks.add(task);
+        }
+
+        private String getResultKey() {
+            return resultKey;
+        }
+
+        private long getStartTime() {
+            return startTime;
+        }
+
+        private ApproveContractToNodeResultDTO getResult() {
+            return result;
+        }
+
+        private List<ApproveToNodeTask> getTasks() {
+            return tasks;
+        }
+    }
+
+    private static class ApproveToNodeTask {
+        private final String contractNumber;
+        private final String targetNodeName;
+
+        private ApproveToNodeTask(String contractNumber, String targetNodeName) {
+            this.contractNumber = contractNumber;
+            this.targetNodeName = targetNodeName;
+        }
+
+        private String getContractNumber() {
+            return contractNumber;
+        }
+
+        private String getTargetNodeName() {
+            return targetNodeName;
+        }
+    }
+
+    private static class ApproveToNodeTaskBatch {
+        private final List<ApproveToNodeTask> tasks;
+
+        private ApproveToNodeTaskBatch(List<ApproveToNodeTask> tasks) {
+            this.tasks = tasks;
+        }
+
+        private List<ApproveToNodeTask> getTasks() {
+            return tasks;
+        }
+
+        private String getContractNumber() {
+            return tasks.isEmpty() ? null : tasks.get(0).getContractNumber();
+        }
+    }
+
+    private static class ApproveToNodeTaskResult {
+        private final ApproveToNodeTask task;
+        private final ApproveToNodeItemResult itemResult;
+
+        private ApproveToNodeTaskResult(ApproveToNodeTask task, ApproveToNodeItemResult itemResult) {
+            this.task = task;
+            this.itemResult = itemResult;
+        }
+
+        private ApproveToNodeTask getTask() {
+            return task;
+        }
+
+        private ApproveToNodeItemResult getItemResult() {
+            return itemResult;
         }
     }
 

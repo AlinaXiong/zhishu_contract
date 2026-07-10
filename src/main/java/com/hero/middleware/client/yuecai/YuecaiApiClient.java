@@ -13,6 +13,7 @@ import org.springframework.stereotype.Component;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 
 @Slf4j
@@ -22,25 +23,36 @@ public class YuecaiApiClient {
     @Autowired
     private YuecaiApiConfig yuecaiApiConfig;
     @Autowired
-    private YuecaiApiClient yuecaiApiClient;
-
-    @Autowired
     private ApiLogService apiLogService;
 
-    private static String ACCESS_TOKEN = null;
+    private static final long DEFAULT_ACCESS_TOKEN_TTL_MILLIS = TimeUnit.MINUTES.toMillis(5);
+    private static final long ACCESS_TOKEN_REFRESH_AHEAD_MILLIS = TimeUnit.SECONDS.toMillis(60);
+
+    private final Object accessTokenLock = new Object();
+    private volatile AccessTokenCache accessTokenCache;
 
     private Map<String,String> getHeader(){
-//        if(ACCESS_TOKEN==null){
-//        }
-        ACCESS_TOKEN = yuecaiApiClient.getAccessToken();
         Map<String,String> header = new HashMap<>();
         header.put("Content-Type","application/json");
-        header.put("Authorization",ACCESS_TOKEN);
+        header.put("Authorization", getAccessToken());
         return header;
     }
 
     public String getAccessToken(){
-//        String response = yuecaiApiClient.doPost("/oauth/oauth/token", null);
+        AccessTokenCache cachedToken = accessTokenCache;
+        if (cachedToken != null && cachedToken.isUsable()) {
+            return cachedToken.getToken();
+        }
+        synchronized (accessTokenLock) {
+            cachedToken = accessTokenCache;
+            if (cachedToken != null && cachedToken.isUsable()) {
+                return cachedToken.getToken();
+            }
+            return requestNewAccessToken();
+        }
+    }
+
+    private String requestNewAccessToken() {
         String url = yuecaiApiConfig.getBaseUrl() + "/oauth/oauth/token";
         Map<String, Object> params = new HashMap<>();
         params.put("grant_type",yuecaiApiConfig.getGrantType());
@@ -53,10 +65,35 @@ public class YuecaiApiClient {
                     .execute();
 //            log.info("业财API响应: {}", response.body());
             Map map = JSONObject.parseObject(response.body(), Map.class);
-            return String.valueOf(map.get("access_token"));
+            Object accessToken = map == null ? null : map.get("access_token");
+            String token = accessToken == null ? null : String.valueOf(accessToken).trim();
+            if (token == null || token.isEmpty() || "null".equalsIgnoreCase(token)) {
+                throw new RuntimeException("业财OAuth响应缺少access_token");
+            }
+            long expiresInMillis = resolveAccessTokenTtlMillis(map.get("expires_in"));
+            accessTokenCache = new AccessTokenCache(token, System.currentTimeMillis() + expiresInMillis);
+            log.info("业财OAuth token已刷新，有效期={}ms", expiresInMillis);
+            return token;
         } catch (Exception e) {
             log.error("业财API请求异常: {}", e.getMessage(), e);
             throw new RuntimeException("业财API请求失败: " + e.getMessage());
+        }
+    }
+
+    private long resolveAccessTokenTtlMillis(Object expiresIn) {
+        if (expiresIn == null) {
+            return DEFAULT_ACCESS_TOKEN_TTL_MILLIS;
+        }
+        try {
+            long seconds = Long.parseLong(String.valueOf(expiresIn));
+            if (seconds <= 0) {
+                return DEFAULT_ACCESS_TOKEN_TTL_MILLIS;
+            }
+            long ttlMillis = TimeUnit.SECONDS.toMillis(seconds);
+            long refreshAheadMillis = Math.min(ACCESS_TOKEN_REFRESH_AHEAD_MILLIS, ttlMillis / 10);
+            return Math.max(TimeUnit.SECONDS.toMillis(1), ttlMillis - refreshAheadMillis);
+        } catch (NumberFormatException ignored) {
+            return DEFAULT_ACCESS_TOKEN_TTL_MILLIS;
         }
     }
 
@@ -197,6 +234,24 @@ public class YuecaiApiClient {
             } catch (Exception e) {
                 log.error("提交业财API调用日志失败, URL: {}", url, e);
             }
+        }
+    }
+
+    private static class AccessTokenCache {
+        private final String token;
+        private final long expiresAtMillis;
+
+        private AccessTokenCache(String token, long expiresAtMillis) {
+            this.token = token;
+            this.expiresAtMillis = expiresAtMillis;
+        }
+
+        private String getToken() {
+            return token;
+        }
+
+        private boolean isUsable() {
+            return System.currentTimeMillis() < expiresAtMillis;
         }
     }
 

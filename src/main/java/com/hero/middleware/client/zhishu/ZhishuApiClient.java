@@ -1,17 +1,30 @@
 package com.hero.middleware.client.zhishu;
 
-import cn.hutool.http.HttpRequest;
-import cn.hutool.http.HttpResponse;
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;
 import com.hero.middleware.config.ZhishuApiConfig;
 import com.hero.middleware.dto.ApiLogEvent;
 import com.hero.middleware.service.ApiLogService;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.http.client.methods.CloseableHttpResponse;
+import org.apache.http.client.methods.HttpDelete;
+import org.apache.http.client.methods.HttpGet;
+import org.apache.http.client.methods.HttpPost;
+import org.apache.http.client.methods.HttpPut;
+import org.apache.http.client.methods.HttpUriRequest;
+import org.apache.http.client.utils.URIBuilder;
+import org.apache.http.entity.ContentType;
+import org.apache.http.entity.StringEntity;
+import org.apache.http.entity.mime.MultipartEntityBuilder;
+import org.apache.http.impl.client.CloseableHttpClient;
+import org.apache.http.util.EntityUtils;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 
 import java.io.File;
+import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.function.Supplier;
 
@@ -28,6 +41,10 @@ public class ZhishuApiClient {
     @Autowired
     private ApiLogService apiLogService;
 
+    @Autowired
+    @Qualifier("zhishuHttpClient")
+    private CloseableHttpClient zhishuHttpClient;
+
     public String doGet(String path, Map<String, Object> params) {
         return doGet("智书接口调用", path, params);
     }
@@ -36,11 +53,9 @@ public class ZhishuApiClient {
         String url = zhishuApiConfig.getBaseUrl() + path;
         return executeAndRecord(action, "GET", url, JSON.toJSONString(params), () -> {
             String token = zhishuTokenManager.getAccessToken();
-            return HttpRequest.get(url)
-                    .header("Authorization", "Bearer " + token)
-                    .form(params)
-                    .timeout(zhishuApiConfig.getTimeout())
-                    .execute();
+            HttpGet request = new HttpGet(buildGetUri(url, params));
+            request.setHeader("Authorization", "Bearer " + token);
+            return request;
         });
     }
 
@@ -53,12 +68,11 @@ public class ZhishuApiClient {
         String bodyJson = JSON.toJSONString(body);
         return executeAndRecord(action, "POST", url, bodyJson, () -> {
             String token = zhishuTokenManager.getAccessToken();
-            return HttpRequest.post(url)
-                    .header("Content-Type", "application/json")
-                    .header("Authorization", "Bearer " + token)
-                    .body(bodyJson)
-                    .timeout(zhishuApiConfig.getTimeout())
-                    .execute();
+            HttpPost request = new HttpPost(url);
+            request.setHeader("Content-Type", "application/json");
+            request.setHeader("Authorization", "Bearer " + token);
+            request.setEntity(new StringEntity(bodyJson, StandardCharsets.UTF_8));
+            return request;
         });
     }
 
@@ -66,10 +80,9 @@ public class ZhishuApiClient {
         String url = zhishuApiConfig.getBaseUrl() + path;
         return executeAndRecord(action, "POST", url, "", () -> {
             String token = zhishuTokenManager.getAccessToken();
-            return HttpRequest.post(url)
-                    .header("Authorization", "Bearer " + token)
-                    .timeout(zhishuApiConfig.getTimeout())
-                    .execute();
+            HttpPost request = new HttpPost(url);
+            request.setHeader("Authorization", "Bearer " + token);
+            return request;
         });
     }
 
@@ -77,43 +90,29 @@ public class ZhishuApiClient {
         String url = zhishuApiConfig.getBaseUrl() + path;
         return executeAndRecord(action, "DELETE", url, "", () -> {
             String token = zhishuTokenManager.getAccessToken();
-            return HttpRequest.delete(url)
-                    .header("Authorization", "Bearer " + token)
-                    .timeout(zhishuApiConfig.getTimeout())
-                    .execute();
+            HttpDelete request = new HttpDelete(url);
+            request.setHeader("Authorization", "Bearer " + token);
+            return request;
         });
     }
 
     public String doPostMultipart(String path, Map<String, Object> formData) {
         String url = zhishuApiConfig.getBaseUrl() + path;
-        log.info("智书API multipart POST请求: {}", url);
-        try {
+        String requestParams = buildMultipartLogData(formData);
+        return executeAndRecord("智书接口调用", "POST", url, requestParams, () -> {
             String token = zhishuTokenManager.getAccessToken();
-            log.info("获取到的token: {}", token != null ? "******" : "null");
-            logMultipartForm(formData);
-
-            HttpResponse response = HttpRequest.post(url)
-                    .header("Authorization", "Bearer " + token)
-                    .form(formData)
-                    .timeout(zhishuApiConfig.getTimeout())
-                    .execute();
-
-            log.info("智书API响应状态码: {}", response.getStatus());
-            String responseBody = response.body();
-            log.info("智书API响应内容: {}", responseBody);
-            return responseBody;
-        } catch (Exception e) {
-            log.error("智书API multipart POST请求异常, URL: {}, 错误: {}", url, e.getMessage(), e);
-            throw new RuntimeException("智书API请求失败: " + e.getMessage());
-        }
+            HttpPost request = new HttpPost(url);
+            request.setHeader("Authorization", "Bearer " + token);
+            request.setEntity(buildMultipartEntity(formData));
+            return request;
+        });
     }
 
-    private void logMultipartForm(Map<String, Object> formData) {
-        if (formData == null) {
-            log.info("智书API multipart POST请求参数: null");
-            return;
-        }
+    private String buildMultipartLogData(Map<String, Object> formData) {
         JSONObject logData = new JSONObject();
+        if (formData == null) {
+            return logData.toJSONString();
+        }
         for (Map.Entry<String, Object> entry : formData.entrySet()) {
             Object value = entry.getValue();
             if (value instanceof File) {
@@ -123,7 +122,26 @@ public class ZhishuApiClient {
                 logData.put(entry.getKey(), value);
             }
         }
-        log.info("智书API multipart POST请求参数: {}", logData.toJSONString());
+        return logData.toJSONString();
+    }
+
+    private org.apache.http.HttpEntity buildMultipartEntity(Map<String, Object> formData) {
+        MultipartEntityBuilder builder = MultipartEntityBuilder.create();
+        if (formData == null) {
+            return builder.build();
+        }
+        for (Map.Entry<String, Object> entry : formData.entrySet()) {
+            String key = entry.getKey();
+            Object value = entry.getValue();
+            if (value instanceof File) {
+                File file = (File) value;
+                builder.addBinaryBody(key, file, ContentType.DEFAULT_BINARY, file.getName());
+            } else {
+                builder.addTextBody(key, value == null ? "" : String.valueOf(value),
+                        ContentType.TEXT_PLAIN.withCharset(StandardCharsets.UTF_8));
+            }
+        }
+        return builder.build();
     }
 
     public String doPut(String path, Object body) {
@@ -135,12 +153,11 @@ public class ZhishuApiClient {
         String bodyJson = JSON.toJSONString(body);
         return executeAndRecord(action, "PUT", url, bodyJson, () -> {
             String token = zhishuTokenManager.getAccessToken();
-            return HttpRequest.put(url)
-                    .header("Content-Type", "application/json")
-                    .header("Authorization", "Bearer " + token)
-                    .body(bodyJson)
-                    .timeout(zhishuApiConfig.getTimeout())
-                    .execute();
+            HttpPut request = new HttpPut(url);
+            request.setHeader("Content-Type", "application/json");
+            request.setHeader("Authorization", "Bearer " + token);
+            request.setEntity(new StringEntity(bodyJson, StandardCharsets.UTF_8));
+            return request;
         });
     }
 
@@ -188,20 +205,27 @@ public class ZhishuApiClient {
                                     String httpMethod,
                                     String url,
                                     String requestParams,
-                                    Supplier<HttpResponse> requestSupplier) {
+                                    Supplier<HttpUriRequest> requestSupplier) {
         long startTime = System.currentTimeMillis();
         Integer httpStatus = null;
         String responseBody = null;
         String exceptionMessage = null;
-        log.info("智书API {}请求: {}", httpMethod, url);
-        log.debug("智书API {}请求参数: {}", httpMethod, requestParams);
+        if (log.isDebugEnabled()) {
+            log.debug("智书API请求，action={}，method={}，url={}，requestSize={}",
+                    action, httpMethod, url, requestParams == null ? 0 : requestParams.length());
+        }
         try {
-            HttpResponse response = requestSupplier.get();
-            httpStatus = response.getStatus();
-            responseBody = response.body();
-            log.info("智书API响应状态码: {}", httpStatus);
-            log.debug("智书API响应内容: {}", responseBody);
-            return responseBody;
+            HttpUriRequest request = requestSupplier.get();
+            try (CloseableHttpResponse response = zhishuHttpClient.execute(request)) {
+                httpStatus = response.getStatusLine().getStatusCode();
+                responseBody = EntityUtils.toString(response.getEntity(), StandardCharsets.UTF_8);
+                if (log.isDebugEnabled()) {
+                    log.debug("智书API响应，action={}，method={}，url={}，status={}，durationMs={}，responseSize={}",
+                            action, httpMethod, url, httpStatus, System.currentTimeMillis() - startTime,
+                            responseBody == null ? 0 : responseBody.length());
+                }
+                return responseBody;
+            }
         } catch (Exception e) {
             exceptionMessage = e.getMessage();
             log.error("智书API {}请求异常, URL: {}, 错误: {}", httpMethod, url, e.getMessage(), e);
@@ -223,6 +247,22 @@ public class ZhishuApiClient {
             } catch (Exception e) {
                 log.error("提交智书API调用日志失败, URL: {}", url, e);
             }
+        }
+    }
+
+    private URI buildGetUri(String url, Map<String, Object> params) {
+        try {
+            URIBuilder builder = new URIBuilder(url);
+            if (params != null) {
+                for (Map.Entry<String, Object> entry : params.entrySet()) {
+                    if (entry.getKey() != null && entry.getValue() != null) {
+                        builder.addParameter(entry.getKey(), String.valueOf(entry.getValue()));
+                    }
+                }
+            }
+            return builder.build();
+        } catch (Exception e) {
+            throw new IllegalArgumentException("构建智书GET请求地址失败：" + url, e);
         }
     }
 

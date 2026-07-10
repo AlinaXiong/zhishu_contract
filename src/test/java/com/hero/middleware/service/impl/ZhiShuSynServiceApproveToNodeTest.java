@@ -2,6 +2,7 @@ package com.hero.middleware.service.impl;
 
 import com.hero.middleware.client.zhishu.ZhishuContractClient;
 import com.hero.middleware.client.zhishu.request.ApprovalContractRequest;
+import com.hero.middleware.client.zhishu.request.ContractsSearchRequest;
 import com.hero.middleware.client.zhishu.response.ApprovalQueryResponse;
 import com.hero.middleware.client.zhishu.response.ApprovalResponse;
 import com.hero.middleware.client.zhishu.response.ContractQueryResponse;
@@ -20,6 +21,11 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -190,6 +196,33 @@ class ZhiShuSynServiceApproveToNodeTest {
         assertTrue(result.getFailures().get(0).getReason().contains("超过最大自动审批节点数"));
         verify(zhishuContractClient, times(20))
                 .approvalContract(any(ApprovalContractRequest.class), eq("process-1"));
+    }
+
+    @Test
+    void approveContractsToNodeByMapRunsIndependentContractsInParallel() {
+        ZhiShuSynServiceImpl service = buildService();
+        CountDownLatch bothSearchesStarted = new CountDownLatch(2);
+        when(zhishuContractClient.searchContracts(any())).thenAnswer(invocation -> {
+            ContractsSearchRequest searchRequest = invocation.getArgument(0);
+            bothSearchesStarted.countDown();
+            if (!bothSearchesStarted.await(3, TimeUnit.SECONDS)) {
+                throw new IllegalStateException("independent contract approvals did not run concurrently");
+            }
+            String contractNumber = searchRequest.getContractNumber();
+            return searchResponse(contract(contractNumber, 100L, 1, "approving", "process-" + contractNumber));
+        });
+        when(zhishuContractClient.getApprovalContract(anyString(), any()))
+                .thenReturn(approvalQuery("task-1", TARGET_NODE, "", "user-1"));
+
+        Map<String, List<String>> request = new LinkedHashMap<>();
+        request.put(TARGET_NODE, Arrays.asList("C-001", "C-002"));
+
+        Map<String, ApproveContractToNodeResultDTO> resultMap = service.approveContractsToNode(request);
+
+        ApproveContractToNodeResultDTO result = resultMap.get(TARGET_NODE);
+        assertEquals(Integer.valueOf(2), result.getSuccessCount());
+        assertEquals(Integer.valueOf(0), result.getFailCount());
+        verify(zhishuContractClient, times(2)).searchContracts(any());
     }
 
     @Test

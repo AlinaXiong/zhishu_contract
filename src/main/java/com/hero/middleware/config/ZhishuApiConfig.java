@@ -17,6 +17,14 @@ public class ZhishuApiConfig {
 
     private Integer timeout;
 
+    private Integer connectionRequestTimeout = 5000;
+
+    private Integer connectTimeout = 5000;
+
+    private Integer maxTotalConnections = 30;
+
+    private Integer maxConnectionsPerRoute = 12;
+
     private String draftPageUrl;
 
     private String detailPageUrl;

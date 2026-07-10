@@ -293,7 +293,10 @@ public class ContractServiceImpl implements ContractService {
             detailUrl = zhishuApiClient.buildDetailPageUrl(dto.getContractId());
         }
         request.setContUrl(detailUrl);
-        log.info("向业财同步合同组装后的请求对象：{}", JSON.toJSONString(request));
+        log.info("向业财同步合同请求已组装，contractId={}", dto.getContractId());
+        if (log.isDebugEnabled()) {
+            log.debug("向业财同步合同组装后的请求对象：{}", JSON.toJSONString(request));
+        }
 
         YuecaiResponse response = yuecaiContractClient.syncContract(request);
 
@@ -311,7 +314,9 @@ public class ContractServiceImpl implements ContractService {
         if("ZB".equals(htType) && 9==contractStatusCode){
             log.info("更新主播卡片---------------------------------------------开始");
             UpdateAnchorCardRequest updateAnchorCardRequest = makeAnchorCardInfo(contractQueryInfo,formData);
-            log.info("组装后更新主播信息对象：{}",JSONObject.toJSONString(updateAnchorCardRequest));
+            if (log.isDebugEnabled()) {
+                log.debug("组装后更新主播信息对象：{}", JSONObject.toJSONString(updateAnchorCardRequest));
+            }
             Map<String, Object> resultMap = yuecaiContractClient.updateAnchorCard(updateAnchorCardRequest);
             if(!resultMap.get("code").toString().equals("0")){
                 log.info("主播信息更新失败：{}", JSON.toJSONString(resultMap.get("message")));

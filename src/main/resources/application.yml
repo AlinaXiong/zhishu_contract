@@ -30,6 +30,10 @@ mybatis-plus:
 logging:
   level:
     com.hero.middleware: debug
+    com.hero.middleware.client.zhishu.ZhishuApiClient: info
+    com.hero.middleware.client.zhishu.ZhishuContractClient: info
+    com.hero.middleware.service.impl.ZhiShuSynServiceImpl: info
+    org.apache.http: warn
     com.hero.middleware.mapper: debug
   file:
     name: logs

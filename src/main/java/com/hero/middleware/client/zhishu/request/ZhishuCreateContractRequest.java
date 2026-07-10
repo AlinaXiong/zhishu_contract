@@ -131,6 +131,9 @@ public class ZhishuCreateContractRequest implements Serializable {
         @JSONField(name = "our_party_code")
         private String ourPartyCode;
 
+        @JSONField(name = "sign_party_no")
+        private Integer signPartyNo;
+
         @JSONField(name = "our_party_sign_info_resource")
         private SignInfoResource ourPartySignInfoResource;
 

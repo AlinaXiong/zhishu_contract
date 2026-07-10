@@ -41,9 +41,16 @@ public class YuecaiContractClient {
     }
 
     public YuecaiResponse syncContract(ContSyncRequest request) {
-        log.info("同步合同信息-入参：{}", JSONObject.toJSONString(Collections.singletonList(request)));
+        log.info("同步合同信息开始，contractId={}", request == null ? null : request.getContractId());
+        if (log.isDebugEnabled()) {
+            log.debug("同步合同信息-入参：{}", JSONObject.toJSONString(Collections.singletonList(request)));
+        }
         String response = yuecaiApiClient.doPost("同步业财合同信息", SYN_CONTRACT_INFO, Arrays.asList(request));
-        log.info("同步合同信息-返回参数：{}", response);
+        log.info("同步合同信息结束，contractId={}，responseSize={}", request == null ? null : request.getContractId(),
+                response == null ? 0 : response.length());
+        if (log.isDebugEnabled()) {
+            log.debug("同步合同信息-返回参数：{}", response);
+        }
         return parseResponse(response, YuecaiResponse.class);
     }
 

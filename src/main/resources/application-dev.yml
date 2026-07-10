@@ -45,6 +45,10 @@ zhishu:
     app-id: cli_zbN4K2ESwbeR6vk1
     app-secret: OHjFWcCdyQp9OxM4tnTlzRNKUaSu9z4x
     timeout: 30000
+    connection-request-timeout: 5000
+    connect-timeout: 5000
+    max-total-connections: 30
+    max-connections-per-route: 12
     draft-page-url: https://contract.qfei.cn/apply/template?id={contractId}
     detail-page-url: https://contract.qfei.cn/management/mine/detail/{contractId}
   base:

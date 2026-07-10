@@ -57,24 +57,27 @@ public class ZhishuContractClient {
     }
 
     public ContractResponse getContract(String contractId, Map<String, Object> params) {
-        log.info("合同详情查询，合同id为：{}", contractId);
+        log.debug("合同详情查询，合同id为：{}", contractId);
         String getContractPath = GET_CONTRACT_PATH.replace(":contract_id", contractId);
         String response = zhishuApiClient.doGet("查询智书合同详情", getContractPath, params);
-        log.info("查询合同详情-返回参数：{}",response);
+        log.debug("查询合同详情完成，contractId={}，responseSize={}", contractId, response == null ? 0 : response.length());
         return parseResponse(response, ContractResponse.class);
     }
 
     public ContractsSearchResponse searchContracts(ContractsSearchRequest request) {
-        log.info("搜索合同-请求参数：{}", JSONObject.toJSONString(request));
+        if (log.isDebugEnabled()) {
+            log.debug("搜索合同请求参数：{}", JSONObject.toJSONString(request));
+        }
         String response = zhishuApiClient.doPost("搜索智书合同", CONTRACTS_SEARCH_PATH, request);
-        log.info("搜索合同-返回参数：{}", response);
+        log.debug("搜索合同完成，responseSize={}", response == null ? 0 : response.length());
         return parseResponse(response, ContractsSearchResponse.class);
     }
 
     public ResultResponse deleteDraftContract(String contractId) {
         String deletePath = DELETE_DRAFT_CONTRACT_PATH.replace(":contract_id", contractId);
         String response = zhishuApiClient.doDelete("删除智书草稿合同", deletePath);
-        log.info("删除智书草稿合同返回参数：{}", response);
+        log.debug("删除智书草稿合同完成，contractId={}，responseSize={}",
+                contractId, response == null ? 0 : response.length());
         return parseResponse(response, ResultResponse.class);
     }
 
@@ -96,10 +99,11 @@ public class ZhishuContractClient {
     }
 
     public QueryTemplateResponse getTemplate(String templateId, Map<String, Object> params) {
-        log.info("获取{}模板详情信息-请求参数：{}", templateId, params);
+        log.debug("获取模板详情，templateId={}", templateId);
         String getTemplatesPath = GET_TEMPLATES_PATH.replace(":template_id", templateId);
         String response = zhishuApiClient.doGet("查询智书合同模板", getTemplatesPath, params);
-        log.info("获取{}模板详情信息-返回参数：{}", templateId, response);
+        log.debug("获取模板详情完成，templateId={}，responseSize={}", templateId,
+                response == null ? 0 : response.length());
         JSONObject resultRes = JSONObject.parseObject(response);
         String code = resultRes.getString("code");
         if("0".equals(code)){
@@ -110,16 +114,16 @@ public class ZhishuContractClient {
     }
 
     public QueryTemplateListResponse getTemplateList(Map<String, Object> params) {
-        log.info("获取模板列表-请求参数：{}", params);
+        log.debug("获取模板列表");
         String response = zhishuApiClient.doGet(GET_TEMPLATE_LIST_PATH, params);
-        log.info("获取模板列表-返回参数：{}", response);
+        log.debug("获取模板列表完成，responseSize={}", response == null ? 0 : response.length());
         return parseResponse(response, QueryTemplateListResponse.class);
     }
 
     public QueryContractCategoryResponse queryContractCategorys(Map<String, Object> params) {
-        log.info("查询合同类型目录-请求参数：{}", params);
+        log.debug("查询合同类型目录");
         String response = zhishuApiClient.doGet(GET_CONTRACT_CATEGORYS_PATH, params);
-        log.info("查询合同类型目录-返回参数：{}", response);
+        log.debug("查询合同类型目录完成，responseSize={}", response == null ? 0 : response.length());
         return parseResponse(response, QueryContractCategoryResponse.class);
     }
 
@@ -129,17 +133,18 @@ public class ZhishuContractClient {
         formData.put("file_name", file.getName());
         formData.put("need_convert_to_pdf", String.valueOf(needConvertToPdf));
         formData.put("file", file);
-        log.info("上传合同相关文件-请求参数：fileName={}，fileType={}，needConvertToPdf={}，fileSize={}",
+        log.debug("上传合同相关文件，fileName={}，fileType={}，needConvertToPdf={}，fileSize={}",
                 file.getName(), fileType, needConvertToPdf, file.length());
         String response = zhishuApiClient.doPostMultipart(UPLOAD_CONTRACT_FILE_PATH, formData);
-        log.info("上传合同相关文件-返回参数：{}", response);
+        log.debug("上传合同相关文件完成，fileName={}，responseSize={}",
+                file.getName(), response == null ? 0 : response.length());
         return parseResponse(response, UploadContractFileResponse.class);
     }
 
     public CreateTemplateInstanceResponse createTemplateInstance(CreateTemplateInstanceRequest request) {
-        log.info("创建创建模板实-请求信息：{}", request);
+        log.debug("创建模板实例");
         String response = zhishuApiClient.doPost("创建智书模板实例", CREATE_TEMPLATE_INSTANCES_PATH, request);
-        log.info("创建创建模板实-返回信息：{}", response);
+        log.debug("创建模板实例完成，responseSize={}", response == null ? 0 : response.length());
         JSONObject resultRes = JSONObject.parseObject(response);
         String code = resultRes.getString("code");
         if("0".equals(code)){
