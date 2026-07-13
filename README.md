@@ -26,6 +26,16 @@
 - `test` - 测试环境
 - `prod` - 生产环境
 
+## Swagger API 文档
+
+启动服务后，可通过以下地址查看并调试接口：
+
+- Swagger UI：`http://localhost:8087/swagger-ui.html`
+- OpenAPI JSON：`http://localhost:8087/v2/api-docs`
+
+部署到其他环境时，将 `localhost:8080` 替换为实际服务地址。Swagger 会自动扫描
+`com.hero.middleware.controller` 下的接口，并按控制器上的 `@Api`、`@ApiOperation` 注解展示。
+
 ## 项目结构
 
 ```
@@ -96,7 +106,7 @@ hero/
 | 5 | 收款记录同步 | POST | `/api/receipt/sync` | ✅ 已完成 | 业财收款成功后同步收款记录至智书 |
 
 ### 二、智书合同调用的接口（4个）
-
+7
 | 序号 | 接口名称 | 请求方式 | 接口路径 | 完成状态 | 说明 |
 |------|----------|----------|----------|----------|------|
 | 6 | 关联前置单据 | GET | `/api/document/list` | ✅ 已完成 | 智书表单下拉字段获取业财系统单据列表 |
