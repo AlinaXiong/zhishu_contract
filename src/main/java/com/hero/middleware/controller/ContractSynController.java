@@ -27,6 +27,7 @@ import org.springframework.web.multipart.MultipartFile;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.charset.Charset;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -46,6 +47,11 @@ import java.util.zip.ZipInputStream;
 public class ContractSynController {
 
     private static final long MAX_EXTRACTED_CONTRACT_FILE_BYTES = 5L * 1024 * 1024 * 1024;
+    /**
+     * ZIP entries without the UTF-8 flag are decoded with this legacy Chinese encoding.
+     * Entries that carry the ZIP UTF-8 flag are still decoded as UTF-8 by ZipInputStream.
+     */
+    private static final Charset LEGACY_ZIP_ENTRY_CHARSET = Charset.forName("GBK");
 
     @Autowired
     private ZhiShuSynService zhiShuSynService;
@@ -125,7 +131,7 @@ public class ContractSynController {
             HistoryContractSyncResultDTO result = zhiShuSynService.syncHistoryContractsMultiThread(request);
             log.info("智书历史合同多线程上传同步请求处理完成，结果：{}", result);
             return Result.success(result);
-        } catch (IOException e) {
+        } catch (IOException | IllegalArgumentException e) {
             log.error("保存智书历史合同上传文件失败，错误={}", e.getMessage(), e);
             return Result.error(400, "保存上传文件失败：" + e.getMessage());
         } finally {
@@ -292,7 +298,7 @@ public class ContractSynController {
         long extractedFileBytes = 0;
         byte[] buffer = new byte[8192];
         try (InputStream inputStream = contractFile.getInputStream();
-             ZipInputStream zipInputStream = new ZipInputStream(inputStream)) {
+             ZipInputStream zipInputStream = new ZipInputStream(inputStream, LEGACY_ZIP_ENTRY_CHARSET)) {
             ZipEntry zipEntry;
             while ((zipEntry = zipInputStream.getNextEntry()) != null) {
                 if (zipEntry.isDirectory()) {

@@ -12,6 +12,7 @@ import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.io.ByteArrayOutputStream;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
@@ -90,6 +91,34 @@ class ContractSynControllerTest {
         verify(zhiShuSynService).syncHistoryContractsMultiThread(any(HistoryContractSyncDTO.class));
     }
 
+    @Test
+    void multiThreadHistorySyncAcceptsGbkZipEntryNames() throws Exception {
+        HistoryContractSyncResultDTO result = new HistoryContractSyncResultDTO();
+        result.addSuccess("H-GBK-001");
+        when(zhiShuSynService.syncHistoryContractsMultiThread(any(HistoryContractSyncDTO.class)))
+                .thenAnswer(invocation -> {
+                    HistoryContractSyncDTO request = invocation.getArgument(0);
+                    assertTrue(Files.exists(Paths.get(request.getContractFileFallbackRoot())
+                            .resolve("H-GBK-001").resolve("主文件").resolve("合同.pdf")));
+                    return result;
+                });
+
+        MockMultipartFile contractFile = new MockMultipartFile(
+                "contractFile", "contract-files.zip", "application/zip", buildGbkContractFilesZip());
+        MockMultipartFile excelFile = new MockMultipartFile(
+                "excelFile", "history.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "excel-content".getBytes(StandardCharsets.UTF_8));
+
+        mockMvc.perform(multipart("/api/contract/syn/history/multi-thread")
+                        .file(contractFile)
+                        .file(excelFile)
+                        .param("contractNumbers", "H-GBK-001"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        verify(zhiShuSynService).syncHistoryContractsMultiThread(any(HistoryContractSyncDTO.class));
+    }
+
     private byte[] buildContractFilesZip() throws Exception {
         ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
         try (ZipOutputStream zipOutputStream = new ZipOutputStream(outputStream)) {
@@ -97,6 +126,16 @@ class ContractSynControllerTest {
             zipOutputStream.write("contract-content".getBytes(StandardCharsets.UTF_8));
             zipOutputStream.closeEntry();
             zipOutputStream.putNextEntry(new ZipEntry("H-TEST-002/contract.pdf"));
+            zipOutputStream.write("contract-content".getBytes(StandardCharsets.UTF_8));
+            zipOutputStream.closeEntry();
+        }
+        return outputStream.toByteArray();
+    }
+
+    private byte[] buildGbkContractFilesZip() throws Exception {
+        ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+        try (ZipOutputStream zipOutputStream = new ZipOutputStream(outputStream, Charset.forName("GBK"))) {
+            zipOutputStream.putNextEntry(new ZipEntry("附件/H-GBK-001/主文件/合同.pdf"));
             zipOutputStream.write("contract-content".getBytes(StandardCharsets.UTF_8));
             zipOutputStream.closeEntry();
         }

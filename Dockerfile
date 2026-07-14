@@ -1,5 +1,16 @@
-# Build the executable JAR locally before building this image:
-# mvn clean package -DskipTests
+FROM maven:3.9-eclipse-temurin-8 AS builder
+
+WORKDIR /workspace
+
+COPY pom.xml ./
+RUN mvn --batch-mode dependency:go-offline
+
+COPY src ./src
+RUN mvn --batch-mode -Dmaven.test.skip=true package \
+    && JAR_FILE="$(find target -maxdepth 1 -type f -name '*.jar' ! -name '*-original.jar' -print -quit)" \
+    && test -n "$JAR_FILE" \
+    && cp "$JAR_FILE" /tmp/app.jar
+
 FROM eclipse-temurin:8-jre-jammy
 
 WORKDIR /app
@@ -13,8 +24,7 @@ RUN groupadd --system --gid 10001 spring \
     && mkdir -p /app/logs /app/config \
     && chown -R spring:spring /app
 
-ARG JAR_FILE=target/hero-middleware-1.0.0.jar
-COPY --chown=spring:spring ${JAR_FILE} /app/app.jar
+COPY --from=builder --chown=spring:spring /tmp/app.jar /app/app.jar
 
 USER spring
 

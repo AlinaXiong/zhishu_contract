@@ -23,7 +23,7 @@ import java.time.format.DateTimeParseException;
 import java.time.format.ResolverStyle;
 import java.util.Locale;
 
-@Api(tags = "业财主数据同步")
+@Api(tags = "业财主数据同步1")
 @Slf4j
 @RestController
 @RequestMapping("/api/yecai/master-data")
