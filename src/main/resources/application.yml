@@ -6,6 +6,10 @@ spring:
     active: prod
   application:
     name: hero-middleware
+  servlet:
+    multipart:
+      max-file-size: 2GB
+      max-request-size: 2GB
   jackson:
     date-format: yyyy-MM-dd HH:mm:ss
     time-zone: GMT+8
