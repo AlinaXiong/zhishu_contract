@@ -61,9 +61,11 @@ class ContractSynControllerTest {
                     HistoryContractSyncDTO request = invocation.getArgument(0);
                     assertEquals("excel-content", new String(
                             Files.readAllBytes(Paths.get(request.getResolvedFilePath())), StandardCharsets.UTF_8));
-                    assertEquals(Arrays.asList("H-TEST-001"), request.getContractNumbers());
+                    assertEquals(Arrays.asList("H-TEST-001", "H-TEST-002"), request.getContractNumbers());
                     assertTrue(Files.exists(Paths.get(request.getContractFileFallbackRoot())
                             .resolve("H-TEST-001").resolve("contract.pdf")));
+                    assertTrue(Files.exists(Paths.get(request.getContractFileFallbackRoot())
+                            .resolve("H-TEST-002").resolve("contract.pdf")));
                     assertEquals(3, request.getThreadCount());
                     assertEquals(20, request.getBatchSize());
                     return result;
@@ -78,7 +80,7 @@ class ContractSynControllerTest {
         mockMvc.perform(multipart("/api/contract/syn/history/multi-thread")
                         .file(contractFile)
                         .file(excelFile)
-                        .param("contractNumbers", "H-TEST-001")
+                        .param("contractNumbers", "[\"H-TEST-001\", \"H-TEST-002\"]")
                         .param("threadCount", "3")
                         .param("batchSize", "20"))
                 .andExpect(status().isOk())
@@ -92,6 +94,9 @@ class ContractSynControllerTest {
         ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
         try (ZipOutputStream zipOutputStream = new ZipOutputStream(outputStream)) {
             zipOutputStream.putNextEntry(new ZipEntry("H-TEST-001/contract.pdf"));
+            zipOutputStream.write("contract-content".getBytes(StandardCharsets.UTF_8));
+            zipOutputStream.closeEntry();
+            zipOutputStream.putNextEntry(new ZipEntry("H-TEST-002/contract.pdf"));
             zipOutputStream.write("contract-content".getBytes(StandardCharsets.UTF_8));
             zipOutputStream.closeEntry();
         }

@@ -84,7 +84,8 @@ public class ContractSynController {
             @RequestParam(value = "contractStatusCode", required = false) String contractStatusCode,
             @RequestParam(value = "threadCount", required = false) Integer threadCount,
             @RequestParam(value = "batchSize", required = false) Integer batchSize) {
-        if (contractNumbers == null || contractNumbers.isEmpty()) {
+        List<String> normalizedContractNumbers = normalizeMultipartContractNumbers(contractNumbers);
+        if (normalizedContractNumbers.isEmpty()) {
             return Result.error(400, "合同编码集合不能为空");
         }
         if (excelFile == null || excelFile.isEmpty()) {
@@ -102,10 +103,10 @@ public class ContractSynController {
             temporaryDirectory = Files.createTempDirectory("history-contract-upload-");
             Path excelFilePath = saveUpload(temporaryDirectory, excelFile, "history-contract.xlsx");
             Path contractFilesDirectory = extractContractFiles(temporaryDirectory, contractFile);
-            Path contractFileFallbackRoot = resolveContractFileFallbackRoot(contractFilesDirectory, contractNumbers);
+            Path contractFileFallbackRoot = resolveContractFileFallbackRoot(contractFilesDirectory, normalizedContractNumbers);
 
             HistoryContractSyncDTO request = new HistoryContractSyncDTO();
-            request.setContractNumbers(normalizeMultipartContractNumbers(contractNumbers));
+            request.setContractNumbers(normalizedContractNumbers);
             request.setFilePath(excelFilePath.toString());
             request.setContractFileFallbackRoot(contractFileFallbackRoot.toString());
             request.setContractStatusCode(contractStatusCode);
@@ -347,13 +348,50 @@ public class ContractSynController {
 
     private List<String> normalizeMultipartContractNumbers(List<String> contractNumbers) {
         List<String> result = new ArrayList<>();
+        if (contractNumbers == null) {
+            return result;
+        }
         for (String contractNumber : contractNumbers) {
-            String normalizedContractNumber = trimToNull(contractNumber);
-            if (normalizedContractNumber != null) {
-                result.add(normalizedContractNumber);
+            if (contractNumber == null) {
+                continue;
+            }
+            for (String value : contractNumber.split(",")) {
+                String normalizedContractNumber = unwrapMultipartContractNumber(value);
+                if (normalizedContractNumber != null) {
+                    result.add(normalizedContractNumber);
+                }
             }
         }
         return result;
+    }
+
+    /**
+     * Swagger UI posts an array form value as ["contract-1", "contract-2"].
+     * This also keeps repeated form parameters and comma-separated values available.
+     */
+    private String unwrapMultipartContractNumber(String value) {
+        String normalizedValue = trimToNull(value);
+        if (normalizedValue == null) {
+            return null;
+        }
+        while (normalizedValue.startsWith("[")) {
+            normalizedValue = trimToNull(normalizedValue.substring(1));
+            if (normalizedValue == null) {
+                return null;
+            }
+        }
+        while (normalizedValue.endsWith("]")) {
+            normalizedValue = trimToNull(normalizedValue.substring(0, normalizedValue.length() - 1));
+            if (normalizedValue == null) {
+                return null;
+            }
+        }
+        if (normalizedValue.length() >= 2
+                && ((normalizedValue.startsWith("\"") && normalizedValue.endsWith("\""))
+                || (normalizedValue.startsWith("'") && normalizedValue.endsWith("'")))) {
+            normalizedValue = trimToNull(normalizedValue.substring(1, normalizedValue.length() - 1));
+        }
+        return normalizedValue;
     }
 
     private Path resolveContractFileFallbackRoot(Path contractFilesDirectory, List<String> contractNumbers)
