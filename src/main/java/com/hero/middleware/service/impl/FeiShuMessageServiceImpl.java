@@ -126,8 +126,9 @@ public class FeiShuMessageServiceImpl implements FeiShuMessageService {
             FeiShuMessageSendRequest request = new FeiShuMessageSendRequest();
             request.setReceiveId(openId);
             request.setMsgType("interactive");
-            request.setContent(JSON.toJSONString(buildMessageCard("测试发送时间" + remainDays)));
+            request.setContent(JSON.toJSONString(buildMessageCard(contract.getContractNumber()+"-"+contract.getContractName()+"合同到期时间：" + remainDays)));
             FeiShuMessageSendResponse feiShuMessageSendResponse = feiShuApiClient.sendMessage(request);
+            log.info("飞书消息发送结果：{}", JSON.toJSONString(feiShuMessageSendResponse));
         }
     }
 

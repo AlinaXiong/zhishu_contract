@@ -1098,9 +1098,18 @@ class ZhiShuSynServiceImplTest {
         assertEquals(Integer.valueOf(2), childRequest.getSealNumber());
         assertEquals("L001", childRequest.getOurPartyList().get(0).getOurPartyCode());
         assertEquals("V001", childRequest.getCounterPartyList().get(0).getCounterPartyCode());
+        assertEquals(1, childRequest.getPaymentPlanList().size());
         assertEquals("2026-05-01", childRequest.getPaymentPlanList().get(0).getPaymentDate());
         assertTrue(childRequest.getPaymentPlanList().get(0).getPrepaid());
         assertEquals(new BigDecimal("30"), childRequest.getPaymentPlanList().get(0).getPaymentAmount());
+        assertEquals("first payment", childRequest.getPaymentPlanList().get(0).getPaymentDesc());
+        assertEquals("V001", childRequest.getPaymentPlanList().get(0).getPaymentCounterParty().getCounterPartyCode());
+        assertEquals(1, childRequest.getCollectionPlanList().size());
+        assertEquals("2026-05-15", childRequest.getCollectionPlanList().get(0).getCollectionDate());
+        assertEquals(new BigDecimal("20"), childRequest.getCollectionPlanList().get(0).getCollectionAmount());
+        assertEquals("first collection", childRequest.getCollectionPlanList().get(0).getCollectionDesc());
+        assertEquals("V001",
+                childRequest.getCollectionPlanList().get(0).getCollectionCounterParty().getCounterPartyCode());
         assertEquals("G-PARENT", childRequest.getRelation().getRelationContracts().get(0));
 
         JSONArray form = JSON.parseArray(childRequest.getForm());
@@ -1193,6 +1202,23 @@ class ZhiShuSynServiceImplTest {
         assertEquals("AV001", request.getCounterPartyList().get(0).getCounterPartyCode());
         assertEquals(Integer.valueOf(2), request.getSignTypeCode());
         assertEquals(Integer.valueOf(2), request.getCounterPartyList().get(0).getSignPartyNo());
+        assertEquals(1, request.getPaymentPlanList().size());
+        ZhishuCreateContractRequest.PaymentPlanInfo paymentPlan = request.getPaymentPlanList().get(0);
+        assertEquals("2026-06-01", paymentPlan.getPaymentDate());
+        assertEquals(Boolean.TRUE, paymentPlan.getPrepaid());
+        assertEquals(new BigDecimal("1200"), paymentPlan.getPaymentAmount());
+        assertEquals("anchor payment", paymentPlan.getPaymentDesc());
+        assertEquals("CNY", paymentPlan.getCurrencyCode());
+        assertEquals("AV001", paymentPlan.getPaymentCounterParty().getCounterPartyCode());
+        assertPaymentCustomAttributes(paymentPlan.getPaymentCustomAttributes(),
+                "cmoi963cu006e3b713s1y5f7i", "押金/保证金");
+        assertEquals(1, request.getCollectionPlanList().size());
+        ZhishuCreateContractRequest.CollectionPlanInfo collectionPlan = request.getCollectionPlanList().get(0);
+        assertEquals("2026-06-15", collectionPlan.getCollectionDate());
+        assertEquals(new BigDecimal("800"), collectionPlan.getCollectionAmount());
+        assertEquals("anchor collection", collectionPlan.getCollectionDesc());
+        assertEquals("CNY", collectionPlan.getCurrencyCode());
+        assertEquals("AV001", collectionPlan.getCollectionCounterParty().getCounterPartyCode());
 
         JSONArray form = JSON.parseArray(request.getForm());
         assertNotNull(findAttribute(form, ZhishuAndYecaiFiledEnum.OTHER_DISTRIBUTABLE_INCOME.getZhishuFiled()));
@@ -1714,11 +1740,13 @@ class ZhiShuSynServiceImplTest {
             writeGeneralCounterPartySheet(workbook, generalCounterPartyCode);
             writeGeneralOurPartySheet(workbook);
             writePaymentPlanSheet(workbook, generalCounterPartyCode);
-            writeEmptySheet(workbook, "collection-plan");
+            writeCollectionPlanSheet(workbook, generalCounterPartyCode);
             writeAnchorMainSheet(workbook, anchorTextFilePath);
             writeAnchorCounterPartySheet(workbook);
             writeAnchorOurPartySheet(workbook);
             writeAnchorFeeDetailSheet(workbook);
+            writeAnchorPaymentPlanSheet(workbook);
+            writeAnchorCollectionPlanSheet(workbook);
             try (OutputStream outputStream = Files.newOutputStream(excelPath)) {
                 workbook.write(outputStream);
             }
@@ -1924,6 +1952,23 @@ class ZhiShuSynServiceImplTest {
         data.createCell(5).setCellValue(counterPartyCode);
     }
 
+    private void writeCollectionPlanSheet(XSSFWorkbook workbook, String counterPartyCode) {
+        Sheet sheet = workbook.createSheet("collection-plan");
+        Row header = sheet.createRow(0);
+        header.createCell(0).setCellValue("contract_number(contract code)");
+        header.createCell(1).setCellValue("collection_plan_list[].collection_amount(collection amount)");
+        header.createCell(2).setCellValue("collection_plan_list[].collection_date(collection date)");
+        header.createCell(3).setCellValue("collection_plan_list[].collection_desc(collection desc)");
+        header.createCell(4).setCellValue(
+                "collection_plan_list[].collection_counter_party[].counter_party_code(collection counter party)");
+        Row data = sheet.createRow(1);
+        data.createCell(0).setCellValue("G-CHILD");
+        data.createCell(1).setCellValue(20D);
+        data.createCell(2).setCellValue("2026-05-15");
+        data.createCell(3).setCellValue("first collection");
+        data.createCell(4).setCellValue(counterPartyCode);
+    }
+
     private void writeAnchorMainSheet(XSSFWorkbook workbook, String anchorTextFilePath) {
         Sheet sheet = workbook.createSheet("anchor-main");
         Row header = sheet.createRow(0);
@@ -2002,6 +2047,50 @@ class ZhiShuSynServiceImplTest {
         data.createCell(2).setCellValue(1000D);
         data.createCell(3).setCellValue(400D);
         data.createCell(4).setCellValue(600D);
+    }
+
+    private void writeAnchorPaymentPlanSheet(XSSFWorkbook workbook) {
+        Sheet sheet = workbook.createSheet("主播流程_付款计划");
+        Row header = sheet.createRow(0);
+        header.createCell(0).setCellValue("contract_number（合同编码）");
+        header.createCell(1).setCellValue("payment_plan_list（付款计划）");
+        header.createCell(2).setCellValue("payment_plan_list[].payment_date（付款时间）");
+        header.createCell(3).setCellValue("payment_plan_list[].prepaid（是否预付）");
+        header.createCell(4).setCellValue("payment_plan_list[].payment_amount（付款金额）");
+        header.createCell(5).setCellValue("payment_plan_list[].payment_desc（付款说明）");
+        header.createCell(6).setCellValue("payment_plan_list[].payment_custom_attributes/custom_付款性质（付款性质）");
+        header.createCell(7).setCellValue(
+                "payment_plan_list[].payment_counter_party[].counter_party_code（付款对象）");
+        header.createCell(8).setCellValue("付款计划行id(付款记录传的id)");
+        Row data = sheet.createRow(1);
+        data.createCell(0).setCellValue("A-001");
+        data.createCell(2).setCellValue("2026-06-01");
+        data.createCell(3).setCellValue(true);
+        data.createCell(4).setCellValue(1200D);
+        data.createCell(5).setCellValue("anchor payment");
+        data.createCell(6).setCellValue("押金/保证金");
+        data.createCell(7).setCellValue("AV001");
+        data.createCell(8).setCellValue("anchor-payment-row-1");
+    }
+
+    private void writeAnchorCollectionPlanSheet(XSSFWorkbook workbook) {
+        Sheet sheet = workbook.createSheet("主播流程_收款计划");
+        Row header = sheet.createRow(0);
+        header.createCell(0).setCellValue("contract_number（合同编码）");
+        header.createCell(1).setCellValue("collection_plan_list（收款计划）");
+        header.createCell(2).setCellValue("collection_plan_list[].collection_date（收款时间）");
+        header.createCell(3).setCellValue("collection_plan_list[].collection_amount（收款金额）");
+        header.createCell(4).setCellValue("collection_plan_list[].collection_desc（收款说明）");
+        header.createCell(5).setCellValue(
+                "collection_plan_list[].collection_counter_party[].counter_party_code（收款对象）");
+        header.createCell(6).setCellValue("收款计划行id(收款记录传的id)");
+        Row data = sheet.createRow(1);
+        data.createCell(0).setCellValue("A-001");
+        data.createCell(2).setCellValue("2026-06-15");
+        data.createCell(3).setCellValue(800D);
+        data.createCell(4).setCellValue("anchor collection");
+        data.createCell(5).setCellValue("AV001");
+        data.createCell(6).setCellValue("anchor-collection-row-1");
     }
 
     private void writeEmptySheet(XSSFWorkbook workbook, String sheetName) {
@@ -2123,6 +2212,21 @@ class ZhiShuSynServiceImplTest {
         assertEquals(expectedContent, receipt.getString("content"));
         assertEquals(expectedLink, receipt.getString("mobile_app_link"));
         assertEquals(expectedLink, receipt.getString("pc_app_link"));
+    }
+
+    private void assertPaymentCustomAttributes(String paymentCustomAttributes,
+                                               String expectedKey,
+                                               String expectedName) {
+        JSONArray attributes = JSON.parseArray(paymentCustomAttributes);
+        assertNotNull(attributes);
+        assertEquals(1, attributes.size());
+        JSONObject attribute = attributes.getJSONObject(0);
+        assertEquals(ZhishuAndYecaiFiledEnum.PAYMENT_NODE_TYPE.getZhishuFiled(),
+                attribute.getString("attribute_code"));
+        JSONObject attributeValue = attribute.getJSONObject("attribute_value");
+        assertNotNull(attributeValue);
+        assertEquals(expectedKey, attributeValue.getString("key"));
+        assertEquals(expectedName, attributeValue.getString("name"));
     }
 
     private void assertOptionAttribute(JSONArray form,

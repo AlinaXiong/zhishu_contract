@@ -14,6 +14,7 @@ import com.hero.middleware.client.yuecai.response.YuecaiResponse;
 import com.hero.middleware.client.zhishu.ZhiShuVendorClient;
 import com.hero.middleware.client.zhishu.ZhishuApiClient;
 import com.hero.middleware.client.zhishu.ZhishuContractClient;
+import com.hero.middleware.client.zhishu.request.ContractsSearchRequest;
 import com.hero.middleware.client.zhishu.request.PrecedingDocRequest;
 import com.hero.middleware.client.zhishu.request.ZhishuCreateContractRequest;
 import com.hero.middleware.client.zhishu.response.*;
@@ -151,6 +152,36 @@ class ContractServiceImplTest {
         CreateContractResultDTO contract = contractService.createContract(dto);
         log.info(JSONObject.toJSONString(contract));
 
+    }
+
+    @Test
+    public void testUpdateVender() {
+        String contractNumber = "";
+        ContractsSearchRequest request = new ContractsSearchRequest();
+        request.setPageSize(10);
+        request.setPageToken(null);
+        request.setContractNumber(contractNumber);
+        ContractsSearchRequest.CombineCondition combineCondition = new ContractsSearchRequest.CombineCondition();
+        combineCondition.setContractNumber(contractNumber);
+        request.setCombineCondition(combineCondition);
+        ContractsSearchResponse contractsSearchResponse = zhishuContractClient.searchContracts(request);
+        if(contractsSearchResponse==null||contractsSearchResponse.getData()==null||contractsSearchResponse.getData().getItems()==null||contractsSearchResponse.getData().getItems().isEmpty()){
+            log.info("{}：未查询到合同信息！！！",contractNumber);
+            return;
+        }
+        String contractId = contractsSearchResponse.getData().getItems().get(0).getContractId().toString();
+        Map<String, Object> params = new HashMap<>();
+        params.put("user_id_type", "user_id");
+        ContractResponse contractInfo = zhishuContractClient.getContract(contractId,params);
+        ContractQueryResponse contractQueryInfo = null;
+        if(contractInfo!=null){
+            Map<String, Object> data = contractInfo.getData();
+            contractQueryInfo = JSONObject.parseObject(String.valueOf(data.get("contract")), ContractQueryResponse.class);
+        }else{
+            log.info("id = {}未查询到合同信息", contractId);
+        }
+        ResultResponse resultResponse = contractService.updateCounterPartyAntiBriberySigned(contractQueryInfo);
+        log.info(JSONObject.toJSONString(resultResponse));
     }
 
     @Test

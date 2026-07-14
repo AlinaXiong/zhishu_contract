@@ -57,8 +57,11 @@ public class ContractController {
         ContractEventRequest event = JSONUtil.toBean(dto.getEvent().toString(), ContractEventRequest.class);
         if(event!=null&&event.getContractId()!=null&&!event.getContractId().isEmpty()){
             log.info("监听智书合同状态变更同步业财-入参：{}",json);
+        }else{
+            return JSONUtil.parseObj(json);
         }
         syncDTO.setContractId(event.getContractId());
+        syncDTO.setContractStageCode(event.getContractStageCode());
         try{
             contractService.syncContractFromZhishu(syncDTO);
         }catch (Exception e){

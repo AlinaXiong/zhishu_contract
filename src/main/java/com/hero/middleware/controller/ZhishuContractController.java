@@ -60,7 +60,13 @@ public class ZhishuContractController {
     @PostMapping("/submitCheck")
     public ContractCheckResultDTO submitCheck(@RequestBody Map<String,Object> paramMap){
         log.info("智书合同提交校验-入参: {}", JSONObject.toJSON(paramMap));
-        ContractCheckResultDTO checkResultDTO = contractService.submitCheck(paramMap);
+        ContractCheckResultDTO checkResultDTO = null;
+        String businessType = String.valueOf(paramMap.get("businessType"));
+        if("AnchorCard".equals(businessType)){
+            checkResultDTO = contractService.submitAnchorCardCheck(paramMap);
+        }else{
+            checkResultDTO = contractService.submitCheck(paramMap);
+        }
         log.info("智书合同提交校验-返回参数: {}", JSONObject.toJSON(checkResultDTO));
         return checkResultDTO;
     }

@@ -270,11 +270,11 @@ public class DocumentServiceImpl implements DocumentService {
                             if(!resigned){
                                 if("10".equals(roleCode)){//项目经理A
                                     project_managerList.add(userMap);
-                                }else if("40".equals(roleCode)){
+                                }else if("60".equals(roleCode)){
                                     expense_groupList.add(userMap);
                                 }else if("50".equals(roleCode)){
                                     project_acceptanceList.add(userMap);
-                                }else if("60".equals(roleCode)){
+                                }else if("40".equals(roleCode)){
                                     project_budgetList.add(userMap);
                                 }else if("30".equals(roleCode)){//项目经理B  add by lidongliang 20260702
                                     project_sponosorList.add(userMap);

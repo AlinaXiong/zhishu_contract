@@ -49,6 +49,10 @@ import java.util.*;
 @Service
 public class ContractServiceImpl implements ContractService {
 
+    private static final String ANTI_BRIBERY_SIGNED_FIELD_CODE = "VBI00100001";
+    private static final String YES_VALUE = "是";
+    private static final int RADIO_FIELD_TYPE = 3;
+
     @Autowired
     private ContractMapper contractMapper;
 
@@ -256,6 +260,51 @@ public class ContractServiceImpl implements ContractService {
     }
 
     @Override
+    public ResultResponse updateCounterPartyAntiBriberySigned(ContractQueryResponse contractQueryInfo) {
+        if (contractQueryInfo == null) {
+            return buildResultResponse(400, "合同信息不能为空", null);
+        }
+        if (contractQueryInfo.getCounterPartyList() == null || contractQueryInfo.getCounterPartyList().isEmpty()) {
+            return buildResultResponse(400, "合同对方信息不能为空", null);
+        }
+
+        ContractQueryResponse.CounterParty counterParty = contractQueryInfo.getCounterPartyList().get(0);
+        String counterPartyCode = counterParty == null ? null : trimToNull(counterParty.getCounterPartyCode());
+        if (counterPartyCode == null) {
+            return buildResultResponse(400, "对方信息编码不能为空", null);
+        }
+
+        try {
+            QueryAllVendorResponse.Item vendorItem = getExactVendorItemByCode(counterPartyCode);
+            if (vendorItem == null) {
+                return buildResultResponse(404, "未查询到交易方信息", null);
+            }
+            String vendorId = trimToNull(vendorItem.getId());
+            if (vendorId == null) {
+                return buildResultResponse(404, "交易方ID为空", null);
+            }
+
+            VendorInfoResponse vendorInfo = zhiShuVendorClient.getVendorV2(vendorId);
+            if (vendorInfo == null) {
+                return buildResultResponse(404, "未查询到交易方详情", null);
+            }
+
+            CreateVendorRequest updateRequest = copyVendorInfoToUpdateRequest(vendorInfo);
+            updateRequest.setId(vendorId);
+            markAntiBriberySigned(updateRequest);
+
+            CreateVendorResponse updateResponse = zhiShuVendorClient.updateVendor(updateRequest, vendorId);
+            if (updateResponse == null) {
+                return buildResultResponse(500, "修改交易方失败", null);
+            }
+            return buildResultResponse(0, "success", updateResponse);
+        } catch (Exception e) {
+            log.error("更新交易方反贿赂协议签署状态异常，交易方编码：{}", counterPartyCode, e);
+            return buildResultResponse(500, "修改交易方异常: " + e.getMessage(), null);
+        }
+    }
+
+    @Override
     @Transactional(rollbackFor = Exception.class, noRollbackFor = BusinessException.class)
     public void syncContractFromZhishu(ContractSyncDTO dto) {
         String contractId = dto.getContractId();
@@ -311,7 +360,8 @@ public class ContractServiceImpl implements ContractService {
                 JSON.toJSONString(dto), JSON.toJSONString(response), null);
 
         String htType = contractQueryInfo.getParentContractCategoryAbbreviation();//合同类别-一级
-        if("ZB".equals(htType) && 9==contractStatusCode){
+        String ht2Type = contractQueryInfo.getContractCategoryAbbreviation();//合同类别-二级
+        if("ZB".equals(htType) && 9==contractStatusCode){//主播
             log.info("更新主播卡片---------------------------------------------开始");
             UpdateAnchorCardRequest updateAnchorCardRequest = makeAnchorCardInfo(contractQueryInfo,formData);
             if (log.isDebugEnabled()) {
@@ -322,6 +372,13 @@ public class ContractServiceImpl implements ContractService {
                 log.info("主播信息更新失败：{}", JSON.toJSONString(resultMap.get("message")));
             }
             log.info("更新主播卡片---------------------------------------------结束");
+        }else if("FSYHL".equals(ht2Type) && 9==contractStatusCode){//反贿赂协议
+            log.info("修改交易方是否签署反贿赂协议-----------------------------------开始");
+            ResultResponse resultResponse = updateCounterPartyAntiBriberySigned(contractQueryInfo);
+            if(resultResponse==null||0!=resultResponse.getCode()){
+                log.info("修改交易方是否签署反贿赂协议失败：{}", resultResponse==null?null:resultResponse.getMsg());
+            }
+            log.info("修改交易方是否签署反贿赂协议-----------------------------------结束");
         }
 
         log.info("智书合同同步至业财系统成功");
@@ -651,6 +708,47 @@ public class ContractServiceImpl implements ContractService {
             }
         }
 
+        return checkResultDTO;
+    }
+
+    @Override
+    public ContractCheckResultDTO submitAnchorCardCheck(Map<String, Object> paramMap) {
+        ContractCheckResultDTO checkResultDTO = new ContractCheckResultDTO();
+        checkResultDTO.setCode("0");
+        checkResultDTO.setSuccess(true);
+        String contractId = (String) paramMap.get("contractId");
+        ContractQueryResponse contractQueryInfo = getContractInfo(contractId);
+        Integer payTypeCode = contractQueryInfo.getPayTypeCode();
+        //获取履约计划
+        List<ContractQueryResponse.PaymentPlan> paymentPlanList = contractQueryInfo.getPaymentPlanList();
+        if(paymentPlanList!=null && !paymentPlanList.isEmpty()){//如果履约计划付款记录存在则进行校验
+            BigDecimal sumPayAmountBig = contractQueryInfo.getAmount();
+            BigDecimal payAmountBig = new BigDecimal(0);//履约计划一般付款总金额
+            for (ContractQueryResponse.PaymentPlan paymentPlan : paymentPlanList) {
+                BigDecimal paymentAmountBig = paymentPlan.getPaymentAmount();
+                if(2==payTypeCode){//只有支出类型校验金额、押金保证金
+                    JSONArray paymentArr = JSONArray.parseArray(paymentPlan.getPaymentCustomAttributes());
+                    String paymentNature = null;
+                    for(int i = 0; i<paymentArr.size(); i++){
+                        JSONObject payment = paymentArr.getJSONObject(i);
+                        if("付款性质".equals(payment.getString("attribute_name"))){
+                            paymentNature = payment.getJSONObject("attribute_value").getString("name");
+                        }
+                    }
+                    if("一般付款".equals(paymentNature)){
+                        payAmountBig = payAmountBig.add(paymentAmountBig);
+                    }
+                }
+            }
+            if(2==payTypeCode) {//只有支出类型校验金额、押金保证金
+                if (sumPayAmountBig.compareTo(payAmountBig) != 0) {//一般付款
+                    checkResultDTO.setCode("500");
+                    checkResultDTO.setSuccess(false);
+                    checkResultDTO.setErrorMessage("合同总额:"+sumPayAmountBig+"与履约计划中一般付款总金额:"+payAmountBig+"不相等，请确认！");
+                    return checkResultDTO;
+                }
+            }
+        }
         return checkResultDTO;
     }
 
@@ -1044,6 +1142,231 @@ public class ContractServiceImpl implements ContractService {
         return trimValue.isEmpty() ? null : trimValue;
     }
 
+    private ResultResponse buildResultResponse(Integer code, String msg, Object data) {
+        ResultResponse result = new ResultResponse();
+        result.setCode(code);
+        result.setMsg(msg);
+        result.setData(data);
+        return result;
+    }
+
+    private QueryAllVendorResponse.Item getExactVendorItemByCode(String vendorCode) {
+        QueryAllVendorResponse vendorResponse = zhiShuVendorClient.getVendorByCode(vendorCode);
+        List<QueryAllVendorResponse.Item> items = vendorResponse == null || vendorResponse.getItems() == null
+                ? Collections.emptyList() : vendorResponse.getItems();
+        QueryAllVendorResponse.Item exactItem = null;
+        int matchCount = 0;
+        for (QueryAllVendorResponse.Item item : items) {
+            if (item == null || !Objects.equals(vendorCode, item.getVendor())) {
+                continue;
+            }
+            matchCount++;
+            if (exactItem == null) {
+                exactItem = item;
+            }
+        }
+        if (matchCount > 1) {
+            log.warn("按交易方编码查询到多条完全匹配的智书交易方，匹配数量：{}，交易方编码：{}", matchCount, vendorCode);
+        }
+        return exactItem;
+    }
+
+    private void markAntiBriberySigned(CreateVendorRequest updateRequest) {
+        List<CreateVendorRequest.ExtendInfo> extendInfoList = updateRequest.getExtendInfo();
+        if (extendInfoList == null) {
+            extendInfoList = new ArrayList<>();
+            updateRequest.setExtendInfo(extendInfoList);
+        }
+
+        for (CreateVendorRequest.ExtendInfo extendInfo : extendInfoList) {
+            if (extendInfo != null && ANTI_BRIBERY_SIGNED_FIELD_CODE.equals(extendInfo.getFieldCode())) {
+                extendInfo.setFieldValue(YES_VALUE);
+                return;
+            }
+        }
+
+        CreateVendorRequest.ExtendInfo extendInfo = new CreateVendorRequest.ExtendInfo();
+        extendInfo.setFieldCode(ANTI_BRIBERY_SIGNED_FIELD_CODE);
+        extendInfo.setFieldType(RADIO_FIELD_TYPE);
+        extendInfo.setFieldValue(YES_VALUE);
+        extendInfoList.add(extendInfo);
+    }
+
+    private CreateVendorRequest copyVendorInfoToUpdateRequest(VendorInfoResponse item) {
+        CreateVendorRequest updateRequest = new CreateVendorRequest();
+        updateRequest.setId(item.getId());
+        updateRequest.setAdCountry(item.getAdCountry());
+        updateRequest.setAdProvince(item.getAdProvince());
+        updateRequest.setAdCity(item.getAdCity());
+        updateRequest.setAddress(item.getAddress());
+        updateRequest.setAdPostcode(item.getAdPostcode());
+        updateRequest.setLegalPerson(item.getLegalPerson());
+        updateRequest.setCertificationType(item.getCertificationType());
+        updateRequest.setCertificationId(item.getCertificationId());
+        updateRequest.setContactPerson(item.getContactPerson());
+        updateRequest.setContactTelephone(item.getContactTelephone());
+        updateRequest.setContactMobilePhone(item.getContactMobilePhone());
+        updateRequest.setFax(item.getFax());
+        updateRequest.setEmail(item.getEmail());
+        updateRequest.setStatus(item.getStatus());
+        updateRequest.setVendor(item.getVendor());
+        updateRequest.setVendorText(item.getVendorText());
+        updateRequest.setShortText(item.getShortText());
+        updateRequest.setVendorType(item.getVendorType());
+        updateRequest.setVendorCategory(item.getVendorCategory());
+        updateRequest.setVendorNature(item.getVendorNature());
+        updateRequest.setLinkedEmployee(item.getLinkedEmployee());
+        updateRequest.setLinkedCustomer(item.getLinkedCustomer());
+        updateRequest.setIsRisked(item.getIsRisked());
+        updateRequest.setAssociatedWithLegalEntity(item.getAssociatedWithLegalEntity());
+        updateRequest.setAppendix(copyVendorAppendixList(item.getAppendix()));
+        updateRequest.setExtendInfo(copyVendorExtendInfoList(item.getExtendInfo()));
+        updateRequest.setVendorAccounts(copyVendorAccountList(item.getVendorAccounts()));
+        updateRequest.setVendorAddresses(copyVendorAddressList(item.getVendorAddresses()));
+        updateRequest.setVendorCompanyViews(copyVendorCompanyViewList(item.getVendorCompanyViews()));
+        updateRequest.setVendorContacts(copyVendorContactList(item.getVendorContacts()));
+        updateRequest.setGlAccount(item.getGlAccount());
+        updateRequest.setDownPaymentTerm(item.getDownPaymentTerm());
+        updateRequest.setPaymentTerm(item.getPaymentTerm());
+        updateRequest.setVendorSiteCode(item.getVendorSiteCode());
+        updateRequest.setOwnerDepts(item.getOwnerDepts());
+        return updateRequest;
+    }
+
+    private List<CreateVendorRequest.Appendix> copyVendorAppendixList(List<VendorInfoResponse.Appendix> source) {
+        if (source == null) {
+            return null;
+        }
+        List<CreateVendorRequest.Appendix> target = new ArrayList<>();
+        for (VendorInfoResponse.Appendix sourceItem : source) {
+            if (sourceItem == null) {
+                continue;
+            }
+            CreateVendorRequest.Appendix targetItem = new CreateVendorRequest.Appendix();
+            targetItem.setTenantId(sourceItem.getTenantId());
+            targetItem.setFileId(sourceItem.getFileId());
+            targetItem.setFileName(sourceItem.getFileName());
+            targetItem.setFileType(sourceItem.getFileType());
+            targetItem.setFileSize(sourceItem.getFileSize());
+            targetItem.setDownloadUrl(sourceItem.getDownloadUrl());
+            target.add(targetItem);
+        }
+        return target;
+    }
+
+    private List<CreateVendorRequest.ExtendInfo> copyVendorExtendInfoList(List<VendorInfoResponse.ExtendInfo> source) {
+        if (source == null) {
+            return null;
+        }
+        List<CreateVendorRequest.ExtendInfo> target = new ArrayList<>();
+        for (VendorInfoResponse.ExtendInfo sourceItem : source) {
+            if (sourceItem == null) {
+                continue;
+            }
+            CreateVendorRequest.ExtendInfo targetItem = new CreateVendorRequest.ExtendInfo();
+            targetItem.setFieldType(sourceItem.getFieldType());
+            targetItem.setFieldValue(sourceItem.getFieldValue());
+            targetItem.setOptions(sourceItem.getOptions());
+            targetItem.setNum(sourceItem.getNum());
+            targetItem.setDate(sourceItem.getDate());
+            targetItem.setRangeDate(sourceItem.getRangeDate());
+            targetItem.setFieldCode(sourceItem.getFieldCode());
+            targetItem.setAppendix(copyVendorAppendixList(sourceItem.getAppendix()));
+            target.add(targetItem);
+        }
+        return target;
+    }
+
+    private List<CreateVendorRequest.VendorAccount> copyVendorAccountList(List<VendorInfoResponse.VendorAccount> source) {
+        if (source == null) {
+            return null;
+        }
+        List<CreateVendorRequest.VendorAccount> target = new ArrayList<>();
+        for (VendorInfoResponse.VendorAccount sourceItem : source) {
+            if (sourceItem == null) {
+                continue;
+            }
+            CreateVendorRequest.VendorAccount targetItem = new CreateVendorRequest.VendorAccount();
+            targetItem.setAccount(sourceItem.getAccount());
+            targetItem.setIban(sourceItem.getIban());
+            targetItem.setAccountName(sourceItem.getAccountName());
+            targetItem.setBankId(sourceItem.getBankId());
+            targetItem.setBankCode(sourceItem.getBankCode());
+            targetItem.setSwiftCode(sourceItem.getSwiftCode());
+            targetItem.setVendorSiteCode(sourceItem.getVendorSiteCode());
+            targetItem.setBankName(sourceItem.getBankName());
+            targetItem.setBankAcronym(sourceItem.getBankAcronym());
+            targetItem.setCountry(sourceItem.getCountry());
+            targetItem.setBankControlCode(sourceItem.getBankControlCode());
+            targetItem.setExtendInfo(copyVendorExtendInfoList(sourceItem.getExtendInfo()));
+            target.add(targetItem);
+        }
+        return target;
+    }
+
+    private List<CreateVendorRequest.VendorAddress> copyVendorAddressList(List<VendorInfoResponse.VendorAddress> source) {
+        if (source == null) {
+            return null;
+        }
+        List<CreateVendorRequest.VendorAddress> target = new ArrayList<>();
+        for (VendorInfoResponse.VendorAddress sourceItem : source) {
+            if (sourceItem == null) {
+                continue;
+            }
+            CreateVendorRequest.VendorAddress targetItem = new CreateVendorRequest.VendorAddress();
+            targetItem.setCountry(sourceItem.getCountry());
+            targetItem.setProvince(sourceItem.getProvince());
+            targetItem.setCity(sourceItem.getCity());
+            targetItem.setCounty(sourceItem.getCounty());
+            targetItem.setAddress(sourceItem.getAddress());
+            targetItem.setExtendInfo(copyVendorExtendInfoList(sourceItem.getExtendInfo()));
+            target.add(targetItem);
+        }
+        return target;
+    }
+
+    private List<CreateVendorRequest.VendorCompanyView> copyVendorCompanyViewList(List<VendorInfoResponse.VendorCompanyView> source) {
+        if (source == null) {
+            return null;
+        }
+        List<CreateVendorRequest.VendorCompanyView> target = new ArrayList<>();
+        for (VendorInfoResponse.VendorCompanyView sourceItem : source) {
+            if (sourceItem == null) {
+                continue;
+            }
+            CreateVendorRequest.VendorCompanyView targetItem = new CreateVendorRequest.VendorCompanyView();
+            targetItem.setCompanyCode(sourceItem.getCompanyCode());
+            targetItem.setGlAccount(sourceItem.getGlAccount());
+            targetItem.setVendorSiteCode(sourceItem.getVendorSiteCode());
+            targetItem.setPaymentTerm(sourceItem.getPaymentTerm());
+            targetItem.setDownPaymentTerm(sourceItem.getDownPaymentTerm());
+            targetItem.setExtendInfo(copyVendorExtendInfoList(sourceItem.getExtendInfo()));
+            target.add(targetItem);
+        }
+        return target;
+    }
+
+    private List<CreateVendorRequest.VendorContact> copyVendorContactList(List<VendorInfoResponse.VendorContact> source) {
+        if (source == null) {
+            return null;
+        }
+        List<CreateVendorRequest.VendorContact> target = new ArrayList<>();
+        for (VendorInfoResponse.VendorContact sourceItem : source) {
+            if (sourceItem == null) {
+                continue;
+            }
+            CreateVendorRequest.VendorContact targetItem = new CreateVendorRequest.VendorContact();
+            targetItem.setName(sourceItem.getName());
+            targetItem.setPosition(sourceItem.getPosition());
+            targetItem.setEmail(sourceItem.getEmail());
+            targetItem.setPhone(sourceItem.getPhone());
+            targetItem.setRemark(sourceItem.getRemark());
+            targetItem.setExtendInfo(copyVendorExtendInfoList(sourceItem.getExtendInfo()));
+            target.add(targetItem);
+        }
+        return target;
+    }
+
     private ZhishuCreateContractRequest buildZhishuRequest(CreateContractDTO dto) {
         ZhishuCreateContractRequest request = new ZhishuCreateContractRequest();
         SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
@@ -1138,11 +1461,11 @@ public class ContractServiceImpl implements ContractService {
                                 if(!resigned){
                                     if("10".equals(roleCode)){//项目经理A
                                         project_managerList.add(memberUserId);
-                                    }else if("40".equals(roleCode)){
+                                    }else if("60".equals(roleCode)){
                                         expense_groupList.add(memberUserId);
                                     }else if("50".equals(roleCode)){
                                         project_acceptanceList.add(memberUserId);
-                                    }else if("60".equals(roleCode)){
+                                    }else if("40".equals(roleCode)){
                                         project_budgetList.add(memberUserId);
                                     }else if("30".equals(roleCode)){//项目经理B add by lidongliang 20260702
                                         project_sponosorList.add(memberUserId);
@@ -2051,6 +2374,17 @@ public class ContractServiceImpl implements ContractService {
         return cleanVendorType != null && direction != null && cleanVendorType.contains(direction.getZhishuCode());
     }
 
+    private void appendPartnerCode(StringBuilder builder, String partnerCode) {
+        String code = trimToNull(partnerCode);
+        if (code == null) {
+            return;
+        }
+        if (builder.length() > 0) {
+            builder.append(",");
+        }
+        builder.append(code);
+    }
+
     private VendorInfoResponse getVendorInfo(String counterPartyId, Map<String, VendorInfoResponse> vendorInfoCache) {
         String id = trimToNull(counterPartyId);
         if (id == null) {
@@ -2265,7 +2599,7 @@ public class ContractServiceImpl implements ContractService {
             return joinListValue(formData.get(zhishuField));
         }
         if (ZhishuAndYecaiFiledEnum.TOTAL_AMOUNT.getZhishuFiled().equals(zhishuField)) {
-            return contractQueryInfo.getAmount();
+            return defaultAmountIfNull(contractQueryInfo.getAmount());
         }
         if (ZhishuAndYecaiFiledEnum.CONTRACT_CATEGORY_ABBREVIATION.getZhishuFiled().equals(zhishuField)) {
             return contractQueryInfo.getContractCategoryAbbreviation();
@@ -2280,13 +2614,13 @@ public class ContractServiceImpl implements ContractService {
             return contractQueryInfo.getStartDate();
         }
         if (ZhishuAndYecaiFiledEnum.PAYMENT_AMOUNT.getZhishuFiled().equals(zhishuField)||ZhishuAndYecaiFiledEnum.PAYMENT_AMOUNT2.getZhishuFiled().equals(zhishuField)) {
-            return getFirstPaymentPlanValue(contractQueryInfo, "paymentAmount");
+            return defaultAmountIfNull(getFirstPaymentPlanValue(contractQueryInfo, "paymentAmount"));
         }
         if (ZhishuAndYecaiFiledEnum.PAYMENT_DATE.getZhishuFiled().equals(zhishuField)) {
             return getFirstPaymentPlanValue(contractQueryInfo, "paymentDate");
         }
         if (ZhishuAndYecaiFiledEnum.COLLECTION_AMOUNT.getZhishuFiled().equals(zhishuField)||ZhishuAndYecaiFiledEnum.COLLECTION_AMOUNT2.getZhishuFiled().equals(zhishuField)) {
-            return getFirstCollectionPlanValue(contractQueryInfo, "collectionAmount");
+            return defaultAmountIfNull(getFirstCollectionPlanValue(contractQueryInfo, "collectionAmount"));
         }
         if ("legal_entity".equals(zhishuField)) {
             return contractQueryInfo.getOurPartyList() != null && !contractQueryInfo.getOurPartyList().isEmpty()
@@ -2296,7 +2630,15 @@ public class ContractServiceImpl implements ContractService {
             return contractQueryInfo.getCounterPartyList() != null && !contractQueryInfo.getCounterPartyList().isEmpty()
                     ? contractQueryInfo.getCounterPartyList().get(0).getCounterPartyCode() : null;
         }
-        return getBeanFieldValue(contractQueryInfo, snakeToCamel(zhishuField));
+        Object value = getBeanFieldValue(contractQueryInfo, snakeToCamel(zhishuField));
+        if (ZhishuAndYecaiFiledEnum.ESTIMATED_AMOUNT.getZhishuFiled().equals(zhishuField)) {
+            return defaultAmountIfNull(value);
+        }
+        return value;
+    }
+
+    private Object defaultAmountIfNull(Object value) {
+        return value == null ? BigDecimal.ZERO : value;
     }
 
     private Object joinListValue(Object value) {
@@ -2325,7 +2667,7 @@ public class ContractServiceImpl implements ContractService {
             return getPaymentCustomAttributeValue(contractQueryInfo, lineIndex, zhishuField);
         }
         if (ZhishuAndYecaiFiledEnum.PAYMENT_AMOUNT.getZhishuFiled().equals(zhishuField)) {
-            return getPaymentPlanValue(contractQueryInfo, lineIndex, "paymentAmount");
+            return defaultAmountIfNull(getPaymentPlanValue(contractQueryInfo, lineIndex, "paymentAmount"));
         }
         if (ZhishuAndYecaiFiledEnum.PAYMENT_DATE.getZhishuFiled().equals(zhishuField)) {
             return getPaymentPlanValue(contractQueryInfo, lineIndex, "paymentDate");
@@ -2338,7 +2680,7 @@ public class ContractServiceImpl implements ContractService {
             return value != null ? value : contractQueryInfo.getCurrencyCode();
         }
         if (ZhishuAndYecaiFiledEnum.COLLECTION_AMOUNT.getZhishuFiled().equals(zhishuField)) {
-            return getCollectionPlanValue(contractQueryInfo, lineIndex, "collectionAmount");
+            return defaultAmountIfNull(getCollectionPlanValue(contractQueryInfo, lineIndex, "collectionAmount"));
         }
         if (ZhishuAndYecaiFiledEnum.COLLECTION_DATE.getZhishuFiled().equals(zhishuField)) {
             return getCollectionPlanValue(contractQueryInfo, lineIndex, "collectionDate");

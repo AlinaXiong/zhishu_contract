@@ -1,5 +1,6 @@
 package com.hero.middleware.dto;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Data;
 
 import java.io.Serializable;
@@ -21,6 +22,8 @@ public class ContractSyncDTO implements Serializable {
     private String partyA;
 
     private String partyB;
+
+    private Integer contractStageCode;
 
     private Map<String, Object> formData;
 

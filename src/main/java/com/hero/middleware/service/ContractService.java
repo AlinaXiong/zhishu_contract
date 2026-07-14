@@ -22,6 +22,8 @@ public interface ContractService {
 
     CreateAntiBriberyContractResultDTO createAntiBriberyContract(QueryAllVendorResponse.Item item);
 
+    ResultResponse updateCounterPartyAntiBriberySigned(ContractQueryResponse contractQueryInfo);
+
     void syncContractFromZhishu(ContractSyncDTO dto);
 
     void updateContractFromZhishu(ContractSyncDTO dto);
@@ -58,6 +60,7 @@ public interface ContractService {
      * @return
      */
     ContractCheckResultDTO submitCheck(Map<String,Object> paramMap);
+    ContractCheckResultDTO submitAnchorCardCheck(Map<String,Object> paramMap);
 
     ContractCheckResultDTO checkOppositeSide(Map<String, Object> paramMap);
 

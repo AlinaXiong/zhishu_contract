@@ -68,7 +68,7 @@ public enum ContractCategoryMappingEnum {
     IPKS("IPKS", "框架收入-衍生品收入"),
     SXKS("SXKS", "框架收入-视效收入框架"),
     XZKS("XZKS", "框架收入-行政运营及人力收入框架"),
-    QTKS("QTKS", "框架收入-其他收入框架"),
+    QTKS("QTKS", "框架收入-其他收入"),
     HLWKS("HLWKS", "框架收入-互联网产品收入框架"),
     MCNKS("MCNKS", "框架收入-MCN平台收入框架"),
     TYKJ("TYKJ", "框架收支-通用框架收支"),

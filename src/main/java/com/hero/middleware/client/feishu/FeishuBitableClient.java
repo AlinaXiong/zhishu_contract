@@ -47,9 +47,9 @@ public class FeishuBitableClient {
                 .build());
 
         if (!resp.success()) {
-            log.error("Feishu bitable batch create failed, code:{}, msg:{}, requestId:{} >>>>> {}", resp.getCode(), resp.getMsg(), resp.getRequestId(),
+            log.error("飞书多维表格批量创建记录失败，错误码：{}，错误信息：{}，请求ID：{}，响应内容：{}", resp.getCode(), resp.getMsg(), resp.getRequestId(),
                     Jsons.createGSON(true, false).toJson(JsonParser.parseString(new String(resp.getRawResponse().getBody(), StandardCharsets.UTF_8))));
-            throw new Exception("Feishu bitable batch create failed");
+            throw new Exception("飞书多维表格批量创建记录失败");
         }
     }
 
@@ -75,9 +75,9 @@ public class FeishuBitableClient {
                 .build());
 
         if (!resp.success()) {
-            log.error("Feishu bitable create failed, code:{}, msg:{}, requestId:{} >>>>> {}", resp.getCode(), resp.getMsg(), resp.getRequestId(),
+            log.error("飞书多维表格创建记录失败，错误码：{}，错误信息：{}，请求ID：{}，响应内容：{}", resp.getCode(), resp.getMsg(), resp.getRequestId(),
                     Jsons.createGSON(true, false).toJson(JsonParser.parseString(new String(resp.getRawResponse().getBody(), StandardCharsets.UTF_8))));
-            throw new Exception("Feishu bitable create failed");
+            throw new Exception("飞书多维表格创建记录失败");
         }
     }
 
@@ -130,9 +130,9 @@ public class FeishuBitableClient {
 
         // 处理服务端错误
         if (!resp.success()) {
-            log.error("Feishu bitable search failed, code:{}, msg:{}, requestId:{} >>>>> {}", resp.getCode(), resp.getMsg(), resp.getRequestId(),
+            log.error("飞书多维表格查询记录失败，错误码：{}，错误信息：{}，请求ID：{}，响应内容：{}", resp.getCode(), resp.getMsg(), resp.getRequestId(),
                     Jsons.createGSON(true, false).toJson(JsonParser.parseString(new String(resp.getRawResponse().getBody(), StandardCharsets.UTF_8))));
-            throw new Exception("Feishu bitable search failed");
+            throw new Exception("飞书多维表格查询记录失败");
         }
 
         return resp.getData().getItems();
@@ -164,9 +164,9 @@ public class FeishuBitableClient {
 
         // 处理服务端错误
         if (!resp.success()) {
-            log.error("Feishu bitable update failed, code:{}, msg:{}, requestId:{} >>>>> {}", resp.getCode(), resp.getMsg(), resp.getRequestId(),
+            log.error("飞书多维表格更新记录失败，错误码：{}，错误信息：{}，请求ID：{}，响应内容：{}", resp.getCode(), resp.getMsg(), resp.getRequestId(),
                     Jsons.createGSON(true, false).toJson(JsonParser.parseString(new String(resp.getRawResponse().getBody(), StandardCharsets.UTF_8))));
-            throw new Exception("Feishu bitable update failed");
+            throw new Exception("飞书多维表格更新记录失败");
         }
     }
 
@@ -176,7 +176,7 @@ public class FeishuBitableClient {
 
     private void checkNotBlank(String value, String propertyName) {
         if (value == null || value.trim().isEmpty()) {
-            throw new IllegalStateException(propertyName + " is not configured");
+            throw new IllegalStateException(propertyName + "未配置");
         }
     }
 }

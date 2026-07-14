@@ -137,8 +137,8 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
     private static final String DEFAULT_CONTRACT_CATEGORY_ABBREVIATION = "FSYHL";
     private static final String DEFAULT_CURRENCY_CODE = "CNY";
 //    private static final String DEFAULT_CONTRACT_FILE_FALLBACK_ROOT = "D:/hero/反商业贿赂协议合同附件_20260626";
-    private static final String DEFAULT_CONTRACT_FILE_FALLBACK_ROOT = "D:/hero/一般流程合同附件_20260630";
-//    private static final String DEFAULT_CONTRACT_FILE_FALLBACK_ROOT = "D:/hero/主播流程合同附件_20260629";
+//    private static final String DEFAULT_CONTRACT_FILE_FALLBACK_ROOT = "D:/hero/一般流程合同附件_20260630";
+    private static final String DEFAULT_CONTRACT_FILE_FALLBACK_ROOT = "D:/hero/主播流程合同附件_20260629";
     private static final String FILE_TYPE_TEXT = "text";
     private static final String FILE_TYPE_ATTACHMENT = "attachment";
     private static final String FILE_TYPE_CAUSE = "cause";
@@ -154,6 +154,7 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
     private static final String FIELD_PAYMENT_AMOUNT = "payment_plan_list[].payment_amount";
     private static final String FIELD_PAYMENT_DESC = "payment_plan_list[].payment_desc";
     private static final String FIELD_PAYMENT_TYPE = "payment_plan_list[].payment_custom_attributes/custom_15_071a641657e94f2faf65bf973850166e";
+    private static final String FIELD_PAYMENT_TYPE_ALIAS = "payment_plan_list[].payment_custom_attributes/custom_付款性质";
     private static final String FIELD_PAYMENT_COUNTER_PARTY =
             "payment_plan_list[].payment_counter_party[].counter_party_code";
     private static final String FIELD_COLLECTION_DATE = "collection_plan_list[].collection_date";
@@ -3448,7 +3449,8 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
     private List<ZhishuCreateContractRequest.PaymentPlanInfo> buildPaymentPlanList(ContractGroup contractGroup,
                                                                                    SyncContext context) {
         List<ZhishuCreateContractRequest.PaymentPlanInfo> paymentPlanList = new ArrayList<>();
-        for (ExcelUtils.ExcelRowData row : contractGroup.getRowsByRole(SheetRole.GENERAL_PAYMENT_PLAN)) {
+        SheetRole paymentPlanRole = contractGroup.getFlowType().getPaymentPlanRole();
+        for (ExcelUtils.ExcelRowData row : contractGroup.getRowsByRole(paymentPlanRole)) {
             ZhishuCreateContractRequest.PaymentPlanInfo paymentPlan = new ZhishuCreateContractRequest.PaymentPlanInfo();
             paymentPlan.setPaymentDate(toDateString(row.getFirstValue(FIELD_PAYMENT_DATE)));
             paymentPlan.setPrepaid(toBoolean(row.getFirstValue(FIELD_PAYMENT_PREPAID)));
@@ -3461,7 +3463,8 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
                 paymentPlan.setPaymentCounterParty(paymentCounterPartyRefs.get(0));
             }
 
-            String paymentCustomAttributes = buildPaymentCustomAttributes(row.getFirstValue(FIELD_PAYMENT_TYPE));
+            String paymentCustomAttributes = buildPaymentCustomAttributes(
+                    getFirstNonBlankRowValue(row, FIELD_PAYMENT_TYPE, FIELD_PAYMENT_TYPE_ALIAS));
             if (paymentCustomAttributes != null) {
                 paymentPlan.setPaymentCustomAttributes(paymentCustomAttributes);
             }
@@ -3470,6 +3473,19 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
             }
         }
         return paymentPlanList;
+    }
+
+    private Object getFirstNonBlankRowValue(ExcelUtils.ExcelRowData row, String... headers) {
+        if (row == null || headers == null) {
+            return null;
+        }
+        for (String header : headers) {
+            Object value = row.getFirstValue(header);
+            if (!isBlankValue(value)) {
+                return value;
+            }
+        }
+        return null;
     }
 
     private String buildPaymentCustomAttributes(Object paymentTypeValue) {
@@ -3495,7 +3511,8 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
     private List<ZhishuCreateContractRequest.CollectionPlanInfo> buildCollectionPlanList(ContractGroup contractGroup,
                                                                                          SyncContext context) {
         List<ZhishuCreateContractRequest.CollectionPlanInfo> collectionPlanList = new ArrayList<>();
-        for (ExcelUtils.ExcelRowData row : contractGroup.getRowsByRole(SheetRole.GENERAL_COLLECTION_PLAN)) {
+        SheetRole collectionPlanRole = contractGroup.getFlowType().getCollectionPlanRole();
+        for (ExcelUtils.ExcelRowData row : contractGroup.getRowsByRole(collectionPlanRole)) {
             ZhishuCreateContractRequest.CollectionPlanInfo collectionPlan =
                     new ZhishuCreateContractRequest.CollectionPlanInfo();
             collectionPlan.setCollectionDate(toDateString(row.getFirstValue(FIELD_COLLECTION_DATE)));
@@ -4705,6 +4722,27 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
         return null;
     }
 
+    private Integer parseSignPartyNo(String text) {
+        text = trimToNull(text);
+        if (text == null) {
+            return null;
+        }
+        BigDecimal decimal = toBigDecimal(text);
+        if (decimal != null) {
+            return decimal.intValue();
+        }
+        if (text.contains("不限制") || text.contains("不限")) {
+            return 0;
+        }
+        if (text.contains("我方")) {
+            return 1;
+        }
+        if (text.contains("对方")) {
+            return 2;
+        }
+        return null;
+    }
+
     private Integer parseSealNumber(String text) {
         if (text.contains("两")) {
             return 2;
@@ -5277,6 +5315,14 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
         private SheetRole getCounterPartyRole() {
             return this == GENERAL ? SheetRole.GENERAL_COUNTER_PARTY : SheetRole.ANCHOR_COUNTER_PARTY;
         }
+
+        private SheetRole getPaymentPlanRole() {
+            return this == GENERAL ? SheetRole.GENERAL_PAYMENT_PLAN : SheetRole.ANCHOR_PAYMENT_PLAN;
+        }
+
+        private SheetRole getCollectionPlanRole() {
+            return this == GENERAL ? SheetRole.GENERAL_COLLECTION_PLAN : SheetRole.ANCHOR_COLLECTION_PLAN;
+        }
     }
 
     private enum SheetRole {
@@ -5292,7 +5338,9 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
         ANCHOR_MAIN(9, FlowType.ANCHOR, "主播流程主表", false),
         ANCHOR_COUNTER_PARTY(10, FlowType.ANCHOR, "主播流程_对方信息", false),
         ANCHOR_OUR_PARTY(11, FlowType.ANCHOR, "主播流程_我方信息", false),
-        ANCHOR_FEE_DETAIL(12, FlowType.ANCHOR, "主播流程_费用明细", true);
+        ANCHOR_FEE_DETAIL(12, FlowType.ANCHOR, "主播流程_费用明细", true),
+        ANCHOR_PAYMENT_PLAN(13, FlowType.ANCHOR, "主播流程_付款计划", false),
+        ANCHOR_COLLECTION_PLAN(14, FlowType.ANCHOR, "主播流程_收款计划", false);
 
         private final int sheetIndex;
         private final FlowType flowType;
