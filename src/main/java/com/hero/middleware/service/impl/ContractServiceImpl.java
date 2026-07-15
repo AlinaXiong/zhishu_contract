@@ -307,10 +307,16 @@ public class ContractServiceImpl implements ContractService {
     @Override
     @Transactional(rollbackFor = Exception.class, noRollbackFor = BusinessException.class)
     public void syncContractFromZhishu(ContractSyncDTO dto) {
+        syncContractFromZhishuWithRemark(dto);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class, noRollbackFor = BusinessException.class)
+    public String syncContractFromZhishuWithRemark(ContractSyncDTO dto) {
         String contractId = dto.getContractId();
         if(contractId==null||contractId.isEmpty()){
 //            log.info("合同id为空！！！");
-            return;
+            return "已跳过：合同ID为空，未发起业财同步";
         }
         log.info("智书合同同步至业财系统: {}", JSON.toJSONString(dto));
         Map<String, Object> params = new HashMap<>();
@@ -322,14 +328,15 @@ public class ContractServiceImpl implements ContractService {
             contractQueryInfo = JSONObject.parseObject(String.valueOf(data.get("contract")), ContractQueryResponse.class);
         }else{
             log.info("回调接口：id = {}未查询到合同信息", contractId);
-            return;
+            return "已跳过：智书未查询到合同信息，未发起业财同步";
         }
 //        contractQueryInfo.setContractStatusCode(9);
         Integer contractStatusCode = contractQueryInfo.getContractStatusCode();
         //只处理2：已撤回、3：审批中、4：已拒绝、9：已归档
         if(3!=contractStatusCode && 9!=contractStatusCode && 2!=contractStatusCode && 4!=contractStatusCode && 11!=contractStatusCode){
             log.info("当前状态不用同步合同信息：id = {} status = {}", contractId, contractStatusCode);
-            return;
+            return String.format("合同状态为%s，仅状态已撤回、审批中、已拒绝、已归档、已变更允许同步，未调用业财同步接口",
+                    ContractStatusEnum.getNameByCode(contractStatusCode));
         }
         //获取form表单数据信息
         Map<String, Object> formData = getContractFormData(contractQueryInfo);
@@ -382,6 +389,7 @@ public class ContractServiceImpl implements ContractService {
         }
 
         log.info("智书合同同步至业财系统成功");
+        return "合同信息已同步至业财";
     }
 
     boolean isYuecaiContractSyncSuccess(YuecaiResponse response) {

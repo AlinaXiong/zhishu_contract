@@ -60,6 +60,9 @@ public class YeCaiContractSyncResultDTO implements Serializable {
 
         private String errorMessage;
 
+        /** 处理结果说明，例如跳过或失败的具体原因。 */
+        private String remark;
+
         private LocalDateTime startTime;
 
         private LocalDateTime endTime;

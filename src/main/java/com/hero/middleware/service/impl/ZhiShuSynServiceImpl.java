@@ -4903,8 +4903,8 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
             item.setZhishuContractId(String.valueOf(contractId));
             ContractSyncDTO dto = new ContractSyncDTO();
             dto.setContractId(String.valueOf(contractId));
-            contractService.syncContractFromZhishu(dto);
-            successYeCaiSyncItem(item);
+            String remark = contractService.syncContractFromZhishuWithRemark(dto);
+            successYeCaiSyncItem(item, remark == null ? "合同信息已同步至业财" : remark);
             log.info("按智书合同编码同步业财成功，contractNumber={}，contractId={}", contractNumber, contractId);
         } catch (Exception e) {
             String errorMessage = buildExceptionMessage(e);
@@ -4933,14 +4933,16 @@ public class ZhiShuSynServiceImpl implements ZhiShuSynService {
         return item;
     }
 
-    private void successYeCaiSyncItem(YeCaiContractSyncResultDTO.Item item) {
+    private void successYeCaiSyncItem(YeCaiContractSyncResultDTO.Item item, String remark) {
         item.setResult(YECAI_SYNC_SUCCESS);
         item.setErrorMessage("");
+        item.setRemark(remark);
     }
 
     private void failYeCaiSyncItem(YeCaiContractSyncResultDTO.Item item, String errorMessage) {
         item.setResult(YECAI_SYNC_FAIL);
         item.setErrorMessage(errorMessage);
+        item.setRemark("处理失败：" + errorMessage);
         if (item.getEndTime() == null) {
             item.setEndTime(LocalDateTime.now());
         }

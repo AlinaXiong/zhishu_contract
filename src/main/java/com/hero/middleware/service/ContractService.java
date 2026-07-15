@@ -26,6 +26,11 @@ public interface ContractService {
 
     void syncContractFromZhishu(ContractSyncDTO dto);
 
+    /**
+     * 同步智书合同，并返回面向调用方的处理说明。
+     */
+    String syncContractFromZhishuWithRemark(ContractSyncDTO dto);
+
     void updateContractFromZhishu(ContractSyncDTO dto);
 
     void updateContractFromYuecai(ContractSyncDTO dto);

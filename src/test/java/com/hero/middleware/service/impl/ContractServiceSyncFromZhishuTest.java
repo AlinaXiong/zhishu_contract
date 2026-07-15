@@ -31,6 +31,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -93,6 +94,22 @@ class ContractServiceSyncFromZhishuTest {
         ArgumentCaptor<ContractSyncLog> logCaptor = ArgumentCaptor.forClass(ContractSyncLog.class);
         verify(contractSyncLogMapper).insert(logCaptor.capture());
         assertEquals("SUCCESS", logCaptor.getValue().getSyncStatus());
+    }
+
+    @Test
+    void syncContractFromZhishuWithRemarkExplainsSkippedStatus() {
+        ContractSyncDTO dto = new ContractSyncDTO();
+        dto.setContractId("100");
+        ContractQueryResponse contract = buildSyncableContract();
+        contract.setContractStatusCode(8);
+        when(zhishuContractClient.getContract(eq("100"), anyMap()))
+                .thenReturn(contractResponse(contract));
+
+        String remark = contractService.syncContractFromZhishuWithRemark(dto);
+
+        assertTrue(remark.contains("已跳过"));
+        assertTrue(remark.contains("归档中"));
+        verifyNoInteractions(yuecaiContractClient);
     }
 
     private ContractResponse contractResponse(ContractQueryResponse contract) {
